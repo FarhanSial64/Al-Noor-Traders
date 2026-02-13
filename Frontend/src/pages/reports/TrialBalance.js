@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Card, CardContent, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography, Button, Divider } from '@mui/material';
+import { Box, Card, CardContent, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography, Button, Divider, Stack } from '@mui/material';
 import { Refresh } from '@mui/icons-material';
 import accountingService from '../../services/accountingService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 const TrialBalance = () => {
@@ -20,7 +22,26 @@ const TrialBalance = () => {
 
   return (
     <Box>
-      <PageHeader title="Trial Balance" subtitle="Summary of all account balances" action={<Button startIcon={<Refresh />} onClick={fetchTrialBalance}>Refresh</Button>} />
+      <PageHeader 
+        title="Trial Balance" 
+        subtitle="Summary of all account balances" 
+        action={
+          <Stack direction="row" spacing={1}>
+            <ExportButtons
+              title="Trial Balance"
+              subtitle={`As of ${new Date().toLocaleDateString()}`}
+              columns={columnDefinitions.trialBalance}
+              data={data.accounts || []}
+              filename={`TrialBalance_${new Date().toISOString().split('T')[0]}`}
+              summary={{
+                'Total Debit': formatCurrency(data.totalDebit),
+                'Total Credit': formatCurrency(data.totalCredit)
+              }}
+            />
+            <Button startIcon={<Refresh />} onClick={fetchTrialBalance}>Refresh</Button>
+          </Stack>
+        } 
+      />
       <Card>
         {loading ? <Loading /> : (
           <CardContent>

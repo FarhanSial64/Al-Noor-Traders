@@ -5,6 +5,8 @@ import { useReactToPrint } from 'react-to-print';
 import accountingService from '../../services/accountingService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 const Payables = () => {
@@ -28,6 +30,9 @@ const Payables = () => {
 
   const handlePrint = useReactToPrint({ contentRef: printRef, documentTitle: `Payables_${new Date().toISOString().split('T')[0]}` });
 
+  // Get filtered vendors with balance > 0 for export
+  const getExportData = () => vendors.filter(v => v.currentBalance > 0);
+
   return (
     <Box>
       <PageHeader 
@@ -35,6 +40,16 @@ const Payables = () => {
         subtitle="Vendor outstanding balances"
         action={
           <Stack direction="row" spacing={1}>
+            <ExportButtons
+              title="Accounts Payable"
+              columns={columnDefinitions.payables}
+              data={getExportData()}
+              filename={`Payables_${new Date().toISOString().split('T')[0]}`}
+              summary={{
+                'Total Vendors': getExportData().length,
+                'Total Payable': formatCurrency(totalPayable)
+              }}
+            />
             <Button variant="outlined" startIcon={<Refresh />} onClick={fetchPayables}>Refresh</Button>
             <Button variant="contained" startIcon={<Print />} onClick={handlePrint}>Print</Button>
           </Stack>

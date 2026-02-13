@@ -11,6 +11,8 @@ import { Bar, Doughnut } from 'react-chartjs-2';
 import dashboardService from '../../services/dashboardService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 ChartJS.register(ArcElement, ChartTooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
@@ -117,6 +119,9 @@ const SalesReport = () => {
     }]
   };
 
+  // Prepare data for export
+  const getExportData = () => reportData?.invoices || [];
+
   return (
     <Box>
       <PageHeader 
@@ -124,6 +129,19 @@ const SalesReport = () => {
         subtitle="Comprehensive sales analysis with filters"
         action={
           <Box sx={{ display: 'flex', gap: 1 }}>
+            <ExportButtons
+              title="Sales Report"
+              subtitle={getPeriodLabel()}
+              columns={columnDefinitions.salesReport}
+              data={getExportData()}
+              filename={`Sales_Report_${new Date().toISOString().split('T')[0]}`}
+              summary={{
+                'Total Sales': formatCurrency(reportData?.summary?.totalSales),
+                'Total Invoices': reportData?.summary?.count || 0,
+                'Avg Order Value': formatCurrency(reportData?.summary?.avgOrderValue)
+              }}
+              orientation="landscape"
+            />
             <Button variant="outlined" startIcon={<Print />} onClick={handlePrint}>Print</Button>
             <Button variant="contained" startIcon={<Refresh />} onClick={fetchReport}>Refresh</Button>
           </Box>

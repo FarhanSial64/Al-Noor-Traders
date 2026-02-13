@@ -4,6 +4,8 @@ import inventoryService from '../../services/inventoryService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
 import SearchFilterBar from '../../components/common/SearchFilterBar';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 const StockMovements = () => {
@@ -71,7 +73,23 @@ const StockMovements = () => {
 
   return (
     <Box>
-      <PageHeader title="Stock Movements" subtitle="Inventory transaction history" />
+      <PageHeader 
+        title="Stock Movements" 
+        subtitle="Inventory transaction history" 
+        action={
+          <ExportButtons
+            title="Stock Movements Report"
+            subtitle={filters.startDate && filters.endDate ? `${filters.startDate} to ${filters.endDate}` : 'All Time'}
+            columns={columnDefinitions.stockMovements}
+            data={movements}
+            filename={`Stock_Movements_${new Date().toISOString().split('T')[0]}`}
+            summary={{
+              'Total Movements': movements.length
+            }}
+            orientation="landscape"
+          />
+        }
+      />
       
       {/* Professional Filters */}
       <SearchFilterBar

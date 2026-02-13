@@ -11,6 +11,8 @@ import { Bar } from 'react-chartjs-2';
 import dashboardService from '../../services/dashboardService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, ChartTooltip, Legend);
@@ -138,6 +140,15 @@ const MyCollectionsReport = () => {
 
   if (loading && !reportData) return <Loading />;
 
+  // Prepare data for export
+  const getExportData = () => (reportData?.receipts || []).map(r => ({
+    paymentDate: r.paymentDate,
+    receiptNumber: r.receiptNumber,
+    customerName: r.customerName || r.customerBusiness || '-',
+    paymentMethod: r.paymentMethod?.replace('_', ' ') || '-',
+    amount: r.amount || 0
+  }));
+
   return (
     <Box>
       <PageHeader 
@@ -145,6 +156,17 @@ const MyCollectionsReport = () => {
         subtitle="Track your payment receipts and collections"
         action={
           <Box sx={{ display: 'flex', gap: 1 }}>
+            <ExportButtons
+              title="My Collections Report"
+              subtitle={`${filters.startDate} to ${filters.endDate}`}
+              columns={columnDefinitions.collections}
+              data={getExportData()}
+              filename={`My_Collections_Report_${new Date().toISOString().split('T')[0]}`}
+              summary={{
+                'Total Collections': formatCurrency(reportData?.summary?.totalCollections),
+                'Total Transactions': reportData?.summary?.totalPayments || 0
+              }}
+            />
             <Button variant="outlined" startIcon={<Print />} onClick={handlePrint}>Print</Button>
             <Button variant="contained" startIcon={<Refresh />} onClick={fetchReport}>Refresh</Button>
           </Box>

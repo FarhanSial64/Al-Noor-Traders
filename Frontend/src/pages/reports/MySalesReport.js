@@ -11,6 +11,8 @@ import { Doughnut } from 'react-chartjs-2';
 import dashboardService from '../../services/dashboardService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 ChartJS.register(ArcElement, ChartTooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
@@ -126,6 +128,16 @@ const MySalesReport = () => {
 
   if (loading && !reportData) return <Loading />;
 
+  // Prepare data for export with proper mapping
+  const getExportData = () => (reportData?.orders || []).map(order => ({
+    invoiceDate: order.orderDate,
+    invoiceNumber: order.orderNumber,
+    customerName: order.customer?.businessName || '-',
+    subtotal: order.subtotal || 0,
+    discount: order.discount || 0,
+    totalAmount: order.totalAmount || 0
+  }));
+
   return (
     <Box>
       <PageHeader 
@@ -133,6 +145,18 @@ const MySalesReport = () => {
         subtitle="Track your orders and sales performance"
         action={
           <Box sx={{ display: 'flex', gap: 1 }}>
+            <ExportButtons
+              title="My Sales Report"
+              subtitle={`${filters.startDate} to ${filters.endDate}`}
+              columns={columnDefinitions.mySales}
+              data={getExportData()}
+              filename={`My_Sales_Report_${new Date().toISOString().split('T')[0]}`}
+              summary={{
+                'Total Sales': formatCurrency(reportData?.summary?.totalSales),
+                'Total Orders': reportData?.summary?.totalOrders || 0
+              }}
+              orientation="landscape"
+            />
             <Button variant="outlined" startIcon={<Print />} onClick={handlePrint}>Print</Button>
             <Button variant="contained" startIcon={<Refresh />} onClick={fetchReport}>Refresh</Button>
           </Box>

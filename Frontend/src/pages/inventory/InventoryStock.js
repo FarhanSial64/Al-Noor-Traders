@@ -5,6 +5,8 @@ import { useReactToPrint } from 'react-to-print';
 import inventoryService from '../../services/inventoryService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 const InventoryStock = () => {
@@ -122,15 +124,42 @@ const InventoryStock = () => {
     );
   };
 
+  // Helper to prepare export data with computed fields
+  const getExportData = () => filteredInventory.map(item => {
+    const totalPieces = item.currentStock || 0;
+    const piecesPerCarton = item.piecesPerCarton || 1;
+    const status = getStockStatus(item);
+    return {
+      ...item,
+      categoryName: item.category?.name || '-',
+      cartons: Math.floor(totalPieces / piecesPerCarton),
+      loosePieces: totalPieces % piecesPerCarton,
+      status: status.label
+    };
+  });
+
   return (
     <Box>
       <PageHeader 
         title="Inventory Stock" 
         subtitle="Current stock levels and valuation" 
         action={
-          <Button variant="outlined" startIcon={<Print />} onClick={handlePrintInventory}>
-            Print Inventory
-          </Button>
+          <Box sx={{ display: 'flex', gap: 1 }}>
+            <ExportButtons
+              title="Inventory Stock Report"
+              columns={columnDefinitions.inventoryStock}
+              data={getExportData()}
+              filename={`Inventory_Stock_${new Date().toISOString().split('T')[0]}`}
+              summary={{
+                'Total Products': filteredInventory.length,
+                'Total Stock': `${totalValue} items`
+              }}
+              orientation="landscape"
+            />
+            <Button variant="outlined" startIcon={<Print />} onClick={handlePrintInventory}>
+              Print
+            </Button>
+          </Box>
         }
       />
       

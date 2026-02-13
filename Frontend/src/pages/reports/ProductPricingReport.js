@@ -10,6 +10,8 @@ import inventoryService from '../../services/inventoryService';
 import productService from '../../services/productService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 const ProductPricingReport = () => {
@@ -81,6 +83,9 @@ const ProductPricingReport = () => {
     totalSaleValue: acc.totalSaleValue + ((item.suggestedSalePricePerPiece || 0) * (item.currentStock || 0))
   }), { totalStock: 0, totalCostValue: 0, totalSaleValue: 0 });
 
+  // Prepare data for export
+  const getExportData = () => reportData;
+
   return (
     <Box>
       <PageHeader 
@@ -88,6 +93,19 @@ const ProductPricingReport = () => {
         subtitle="Average cost and suggested sale prices for all products"
         action={
           <Box sx={{ display: 'flex', gap: 1 }}>
+            <ExportButtons
+              title="Product Pricing Report"
+              columns={columnDefinitions.productPricing}
+              data={getExportData()}
+              filename={`Product_Pricing_Report_${new Date().toISOString().split('T')[0]}`}
+              summary={{
+                'Total Products': reportData.length,
+                'Total Stock': totals.totalStock,
+                'Total Cost Value': formatCurrency(totals.totalCostValue),
+                'Total Sale Value': formatCurrency(totals.totalSaleValue)
+              }}
+              orientation="landscape"
+            />
             <Button variant="outlined" startIcon={<Print />} onClick={handlePrint}>Print</Button>
             <Button variant="contained" startIcon={<Refresh />} onClick={fetchReport}>Refresh</Button>
           </Box>

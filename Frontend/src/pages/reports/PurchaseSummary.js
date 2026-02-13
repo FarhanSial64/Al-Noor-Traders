@@ -9,6 +9,8 @@ import { useReactToPrint } from 'react-to-print';
 import dashboardService from '../../services/dashboardService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 const PurchaseSummary = () => {
@@ -70,6 +72,9 @@ const PurchaseSummary = () => {
     }
   };
 
+  // Prepare data for export
+  const getExportData = () => reportData?.products || [];
+
   return (
     <Box>
       <PageHeader 
@@ -77,6 +82,19 @@ const PurchaseSummary = () => {
         subtitle="Product-wise purchase summary"
         action={
           <Box sx={{ display: 'flex', gap: 1 }}>
+            <ExportButtons
+              title="Purchase Summary"
+              subtitle={getPeriodLabel()}
+              columns={columnDefinitions.purchaseSummary}
+              data={getExportData()}
+              filename={`Purchase_Summary_${new Date().toISOString().split('T')[0]}`}
+              summary={{
+                'Total Products': reportData?.products?.length || 0,
+                'Total Quantity': reportData?.summary?.totalQuantity || 0,
+                'Total Purchases': formatCurrency(reportData?.summary?.totalPurchases)
+              }}
+              orientation="landscape"
+            />
             <Button variant="outlined" startIcon={<Print />} onClick={handlePrint}>Print</Button>
             <Button variant="contained" startIcon={<Refresh />} onClick={fetchReport}>Refresh</Button>
           </Box>

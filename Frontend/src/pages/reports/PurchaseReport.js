@@ -12,6 +12,8 @@ import dashboardService from '../../services/dashboardService';
 import vendorService from '../../services/vendorService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 ChartJS.register(ArcElement, ChartTooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
@@ -118,6 +120,9 @@ const PurchaseReport = () => {
     }]
   };
 
+  // Prepare data for export
+  const getExportData = () => reportData?.purchases || [];
+
   return (
     <Box>
       <PageHeader 
@@ -125,6 +130,18 @@ const PurchaseReport = () => {
         subtitle="Comprehensive purchase analysis with filters"
         action={
           <Box sx={{ display: 'flex', gap: 1 }}>
+            <ExportButtons
+              title="Purchase Report"
+              subtitle={getPeriodLabel()}
+              columns={columnDefinitions.purchaseReport}
+              data={getExportData()}
+              filename={`Purchase_Report_${new Date().toISOString().split('T')[0]}`}
+              summary={{
+                'Total Purchases': formatCurrency(reportData?.summary?.totalPurchases),
+                'Total Orders': reportData?.summary?.count || 0
+              }}
+              orientation="landscape"
+            />
             <Button variant="outlined" startIcon={<Print />} onClick={handlePrint}>Print</Button>
             <Button variant="contained" startIcon={<Refresh />} onClick={fetchReport}>Refresh</Button>
           </Box>

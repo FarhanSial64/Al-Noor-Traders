@@ -5,6 +5,8 @@ import { useReactToPrint } from 'react-to-print';
 import accountingService from '../../services/accountingService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 const Receivables = () => {
@@ -29,6 +31,9 @@ const Receivables = () => {
 
   const handlePrint = useReactToPrint({ contentRef: printRef, documentTitle: `Receivables_${new Date().toISOString().split('T')[0]}` });
 
+  // Get filtered customers with balance > 0 for export
+  const getExportData = () => customers.filter(c => c.currentBalance > 0);
+
   return (
     <Box>
       <PageHeader 
@@ -36,6 +41,16 @@ const Receivables = () => {
         subtitle="Customer outstanding balances"
         action={
           <Stack direction="row" spacing={1}>
+            <ExportButtons
+              title="Accounts Receivable"
+              columns={columnDefinitions.receivables}
+              data={getExportData()}
+              filename={`Receivables_${new Date().toISOString().split('T')[0]}`}
+              summary={{
+                'Total Customers': getExportData().length,
+                'Total Receivable': formatCurrency(totalReceivable)
+              }}
+            />
             <Button variant="outlined" startIcon={<Refresh />} onClick={fetchReceivables}>Refresh</Button>
             <Button variant="contained" startIcon={<Print />} onClick={handlePrint}>Print</Button>
           </Stack>

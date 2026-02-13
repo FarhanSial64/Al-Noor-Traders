@@ -9,6 +9,8 @@ import { useSelector } from 'react-redux';
 import accountingService from '../../services/accountingService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 const ProfitLoss = () => {
@@ -86,6 +88,31 @@ const ProfitLoss = () => {
 
   if (loading) return <Loading />;
 
+  // Prepare P&L data for export
+  const getExportData = () => {
+    if (!data) return [];
+    const rows = [];
+    // Revenue
+    rows.push({ category: 'REVENUE', description: '', amount: '' });
+    rows.push({ category: '', description: 'Total Sales', amount: data.revenue?.totalSales || 0 });
+    rows.push({ category: '', description: 'Less: Returns', amount: -(data.revenue?.salesReturns || 0) });
+    rows.push({ category: '', description: 'Net Revenue', amount: data.revenue?.netRevenue || 0 });
+    // COGS
+    rows.push({ category: 'COST OF GOODS SOLD', description: '', amount: '' });
+    rows.push({ category: '', description: 'Cost of Goods Sold', amount: data.cogs?.totalCogs || 0 });
+    // Gross Profit
+    rows.push({ category: 'GROSS PROFIT', description: '', amount: data.grossProfit || 0 });
+    // Expenses
+    rows.push({ category: 'OPERATING EXPENSES', description: '', amount: '' });
+    (data.expenses?.categories || []).forEach(exp => {
+      rows.push({ category: '', description: exp.category, amount: exp.total || 0 });
+    });
+    rows.push({ category: '', description: 'Total Operating Expenses', amount: data.expenses?.totalExpenses || 0 });
+    // Net Profit
+    rows.push({ category: 'NET PROFIT', description: '', amount: data.netProfit || 0 });
+    return rows;
+  };
+
   return (
     <Box>
       <PageHeader
@@ -93,6 +120,18 @@ const ProfitLoss = () => {
         subtitle="Detailed income and expense breakdown"
         action={
           <Box sx={{ display: 'flex', gap: 1 }}>
+            <ExportButtons
+              title="Profit & Loss Statement"
+              subtitle={`${dateRange.startDate} to ${dateRange.endDate}`}
+              columns={columnDefinitions.profitLoss}
+              data={getExportData()}
+              filename={`ProfitLoss_${dateRange.startDate}_${dateRange.endDate}`}
+              summary={{
+                'Net Revenue': formatCurrency(data?.revenue?.netRevenue),
+                'Gross Profit': formatCurrency(data?.grossProfit),
+                'Net Profit': formatCurrency(data?.netProfit)
+              }}
+            />
             {user?.role === 'distributor' && (
               <Button 
                 variant="outlined" 

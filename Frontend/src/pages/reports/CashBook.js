@@ -3,6 +3,8 @@ import { Box, Card, CardContent, Table, TableBody, TableCell, TableContainer, Ta
 import accountingService from '../../services/accountingService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 const CashBook = () => {
@@ -31,9 +33,30 @@ const CashBook = () => {
 
   const formatCurrency = (amount) => new Intl.NumberFormat('en-PK', { style: 'currency', currency: 'PKR', minimumFractionDigits: 0 }).format(amount || 0);
 
+  // Prepare data for export
+  const getExportData = () => data.entries || [];
+
   return (
     <Box>
-      <PageHeader title="Cash Book" subtitle="Daily cash transactions" />
+      <PageHeader 
+        title="Cash Book" 
+        subtitle="Daily cash transactions" 
+        action={
+          <ExportButtons
+            title="Cash Book"
+            subtitle={`${dateRange.startDate} to ${dateRange.endDate}`}
+            columns={columnDefinitions.cashBook}
+            data={getExportData()}
+            filename={`CashBook_${dateRange.startDate}_${dateRange.endDate}`}
+            summary={{
+              'Opening Balance': formatCurrency(data.openingBalance),
+              'Total Receipts': formatCurrency(data.totalReceipts),
+              'Total Payments': formatCurrency(data.totalPayments),
+              'Closing Balance': formatCurrency(data.closingBalance)
+            }}
+          />
+        }
+      />
       
       <Card sx={{ mb: 3 }}>
         <CardContent>

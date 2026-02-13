@@ -4,6 +4,8 @@ import { Box, Card, CardContent, Typography, Table, TableBody, TableCell, TableC
 import vendorService from '../../services/vendorService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 const VendorLedger = () => {
@@ -23,9 +25,34 @@ const VendorLedger = () => {
 
   if (loading) return <Loading />;
 
+  const formatCurrencyValue = (amount) => new Intl.NumberFormat('en-PK', { style: 'currency', currency: 'PKR', minimumFractionDigits: 0 }).format(amount || 0);
+
   return (
     <Box>
-      <PageHeader title={`Vendor Ledger: ${vendor?.businessName}`} backUrl="/vendors" />
+      <PageHeader 
+        title={`Vendor Ledger: ${vendor?.businessName}`} 
+        backUrl="/vendors" 
+        action={
+          <ExportButtons
+            title="Vendor Ledger"
+            subtitle={vendor?.businessName}
+            columns={columnDefinitions.vendorLedger}
+            data={ledger}
+            filename={`Vendor_Ledger_${vendor?.vendorCode || 'export'}_${new Date().toISOString().split('T')[0]}`}
+            headerInfo={{
+              'Vendor': vendor?.businessName,
+              'Vendor Code': vendor?.vendorCode,
+              'Contact': vendor?.contactPerson,
+              'Phone': vendor?.phone,
+              'Current Balance': formatCurrencyValue(vendor?.currentBalance)
+            }}
+            summary={{
+              'Total Entries': ledger.length,
+              'Current Balance': formatCurrencyValue(vendor?.currentBalance)
+            }}
+          />
+        }
+      />
       <Card sx={{ mb: 3 }}><CardContent><Grid container spacing={2}><Grid item xs={12} md={3}><Typography variant="body2" color="text.secondary">Vendor Code</Typography><Typography fontWeight={500}>{vendor?.vendorCode}</Typography></Grid><Grid item xs={12} md={3}><Typography variant="body2" color="text.secondary">Contact</Typography><Typography fontWeight={500}>{vendor?.contactPerson}</Typography></Grid><Grid item xs={12} md={3}><Typography variant="body2" color="text.secondary">Phone</Typography><Typography fontWeight={500}>{vendor?.phone}</Typography></Grid><Grid item xs={12} md={3}><Typography variant="body2" color="text.secondary">Current Balance</Typography><Chip label={formatCurrency(vendor?.currentBalance)} color={vendor?.currentBalance > 0 ? 'error' : 'success'} size="small" /></Grid></Grid></CardContent></Card>
       <Card><CardContent><Typography variant="h6" gutterBottom>Ledger Entries</Typography>
         <TableContainer><Table size="small"><TableHead><TableRow><TableCell>Date</TableCell><TableCell>Reference</TableCell><TableCell>Description</TableCell><TableCell align="right">Debit</TableCell><TableCell align="right">Credit</TableCell><TableCell align="right">Balance</TableCell></TableRow></TableHead>

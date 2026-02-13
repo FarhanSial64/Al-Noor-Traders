@@ -4,6 +4,8 @@ import { Box, Card, CardContent, Typography, Table, TableBody, TableCell, TableC
 import customerService from '../../services/customerService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
+import ExportButtons from '../../components/common/ExportButtons';
+import { columnDefinitions } from '../../utils/exportUtils';
 import toast from 'react-hot-toast';
 
 const CustomerLedger = () => {
@@ -37,9 +39,34 @@ const CustomerLedger = () => {
 
   if (loading) return <Loading />;
 
+  const formatCurrencyValue = (amount) => new Intl.NumberFormat('en-PK', { style: 'currency', currency: 'PKR', minimumFractionDigits: 0 }).format(amount || 0);
+
   return (
     <Box>
-      <PageHeader title={`Customer Ledger: ${customer?.businessName}`} backUrl="/customers" />
+      <PageHeader 
+        title={`Customer Ledger: ${customer?.businessName}`} 
+        backUrl="/customers" 
+        action={
+          <ExportButtons
+            title="Customer Ledger"
+            subtitle={customer?.businessName}
+            columns={columnDefinitions.customerLedger}
+            data={ledger}
+            filename={`Customer_Ledger_${customer?.customerCode || 'export'}_${new Date().toISOString().split('T')[0]}`}
+            headerInfo={{
+              'Customer': customer?.businessName,
+              'Customer Code': customer?.customerCode,
+              'Contact': customer?.contactPerson,
+              'Phone': customer?.phone,
+              'Current Balance': formatCurrencyValue(customer?.currentBalance)
+            }}
+            summary={{
+              'Total Entries': ledger.length,
+              'Current Balance': formatCurrencyValue(customer?.currentBalance)
+            }}
+          />
+        }
+      />
       
       <Card sx={{ mb: 3 }}>
         <CardContent>
