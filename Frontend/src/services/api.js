@@ -18,8 +18,13 @@ const getCacheKey = (url, params) => {
   return `${url}?${JSON.stringify(params || {})}`;
 };
 
+// Use environment variable for production (Render), fallback to '/api' for local development
+const API_BASE_URL = process.env.REACT_APP_API_URL 
+  ? `${process.env.REACT_APP_API_URL}/api` 
+  : '/api';
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
