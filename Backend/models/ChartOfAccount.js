@@ -122,7 +122,6 @@ const chartOfAccountSchema = new mongoose.Schema({
 });
 
 // Index for sorting
-chartOfAccountSchema.index({ accountCode: 1 });
 chartOfAccountSchema.index({ accountType: 1, accountCode: 1 });
 
 module.exports = mongoose.model('ChartOfAccount', chartOfAccountSchema);

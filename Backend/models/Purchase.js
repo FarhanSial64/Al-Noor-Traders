@@ -214,6 +214,5 @@ purchaseSchema.pre('save', function(next) {
 // Index for queries
 purchaseSchema.index({ vendor: 1, purchaseDate: -1 });
 purchaseSchema.index({ status: 1 });
-purchaseSchema.index({ purchaseNumber: 1 });
 
 module.exports = mongoose.model('Purchase', purchaseSchema);

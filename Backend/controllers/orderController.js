@@ -7,6 +7,7 @@ const InventoryService = require('../services/inventoryService');
 const AccountingService = require('../services/accountingService');
 const { createAuditLog, logFinancialTransaction } = require('../middleware/auditLogger');
 const { ROLES } = require('../config/roles');
+const mongoose = require('mongoose');
 
 /**
  * Order Controller
@@ -235,9 +236,12 @@ exports.createOrder = async (req, res) => {
         });
       }
 
-      // Get actual average cost from inventory valuation
-      const valuation = await InventoryValuation.findOne({ product: product._id });
-      const costPrice = valuation?.averageCost || 0;
+      // Get cost price - prefer Product.costPrice (weighted average), fallback to InventoryValuation
+      let costPrice = product.costPrice || 0;
+      if (costPrice === 0) {
+        const valuation = await InventoryValuation.findOne({ product: product._id });
+        costPrice = valuation?.averageCost || 0;
+      }
 
       // CRITICAL: Use the price entered by Order Booker, NOT from product master
       const lineTotal = totalPieces * item.salePrice;
@@ -356,18 +360,30 @@ exports.updateOrder = async (req, res) => {
       });
     }
 
-    // Only allow editing confirmed or pending orders
-    if (!['pending', 'confirmed'].includes(order.status)) {
+    // Store original values for accounting update
+    const originalGrandTotal = order.grandTotal;
+    let originalCogs = 0;
+    for (const item of order.items) {
+      originalCogs += (item.costPrice || item.salePrice * 0.7) * item.quantity;
+    }
+
+    // KPO and Distributor can edit at ANY stage
+    const allowedRoles = ['distributor', 'computer_operator'];
+    const canEditAnyStage = allowedRoles.includes(req.user.role);
+    
+    // Other roles can only edit pending/confirmed orders
+    if (!canEditAnyStage && !['pending', 'confirmed'].includes(order.status)) {
       return res.status(400).json({
         success: false,
-        message: `Cannot edit order with status: ${order.status}`
+        message: `Cannot edit order with status: ${order.status}. Only KPO and Distributor can edit at this stage.`
       });
     }
 
-    if (order.invoiceGenerated) {
+    // KPO and Distributor can edit even with invoice generated
+    if (!canEditAnyStage && order.invoiceGenerated) {
       return res.status(400).json({
         success: false,
-        message: 'Cannot edit order with generated invoice'
+        message: 'Cannot edit order with generated invoice. Only KPO and Distributor can edit.'
       });
     }
 
@@ -510,7 +526,35 @@ exports.updateOrder = async (req, res) => {
     order.totalDiscount = order.items.reduce((sum, item) => sum + (item.discount || 0), 0);
     order.grandTotal = order.items.reduce((sum, item) => sum + item.netAmount, 0);
 
+    // Calculate new COGS
+    let newCogs = 0;
+    for (const item of order.items) {
+      newCogs += (item.costPrice || item.salePrice * 0.7) * item.quantity;
+    }
+
     await order.save();
+
+    // If invoice was generated, update accounting entries for amount difference
+    if (order.invoiceGenerated && originalGrandTotal !== order.grandTotal) {
+      try {
+        await AccountingService.updateSalesEntry({
+          customerId: order.customer,
+          customerName: order.customerName,
+          invoiceId: order.invoice || order._id,
+          invoiceNumber: order.orderNumber,
+          oldAmount: originalGrandTotal,
+          newAmount: order.grandTotal,
+          oldCostOfGoodsSold: originalCogs,
+          newCostOfGoodsSold: newCogs,
+          userId: req.user._id,
+          userName: req.user.fullName,
+          entryDate: new Date()
+        });
+      } catch (acctError) {
+        console.error('Failed to update accounting entries:', acctError);
+        // Continue - order is already updated
+      }
+    }
 
     await logFinancialTransaction(req, {
       action: 'UPDATE',
@@ -836,9 +880,16 @@ exports.generateInvoice = async (req, res) => {
     let totalCost = 0;
 
     for (const item of order.items) {
-      // Get current cost from inventory valuation
-      const valuation = await InventoryValuation.findOne({ product: item.product });
-      const costPrice = valuation ? valuation.averageCost : 0;
+      // Prefer costPrice already captured on order item, fallback to product or valuation
+      let costPrice = item.costPrice || 0;
+      if (costPrice === 0) {
+        const product = await Product.findById(item.product);
+        costPrice = product?.costPrice || 0;
+        if (costPrice === 0) {
+          const valuation = await InventoryValuation.findOne({ product: item.product });
+          costPrice = valuation?.averageCost || 0;
+        }
+      }
       const lineCost = costPrice * item.quantity;
       const lineProfit = item.netAmount - lineCost;
 
@@ -994,8 +1045,16 @@ exports.bulkGenerateInvoices = async (req, res) => {
         let totalCost = 0;
 
         for (const item of order.items) {
-          const valuation = await InventoryValuation.findOne({ product: item.product });
-          const costPrice = valuation ? valuation.averageCost : 0;
+          // Prefer costPrice already captured on order item, fallback to product or valuation
+          let costPrice = item.costPrice || 0;
+          if (costPrice === 0) {
+            const product = await Product.findById(item.product);
+            costPrice = product?.costPrice || 0;
+            if (costPrice === 0) {
+              const valuation = await InventoryValuation.findOne({ product: item.product });
+              costPrice = valuation?.averageCost || 0;
+            }
+          }
           const lineCost = costPrice * item.quantity;
           const lineProfit = item.netAmount - lineCost;
 
@@ -1261,5 +1320,331 @@ exports.bulkGetInvoices = async (req, res) => {
       success: false,
       message: error.message || 'Server error'
     });
+  }
+};
+
+// @desc    Update invoice (edit quantity only, rate stays same)
+// @route   PUT /api/orders/invoice/:id
+// @access  Private (Computer Operator, Distributor)
+exports.updateInvoice = async (req, res) => {
+  try {
+    const { items, remarks } = req.body;
+    const invoiceId = req.params.id;
+
+    const invoice = await Invoice.findById(invoiceId);
+
+    if (!invoice) {
+      return res.status(404).json({
+        success: false,
+        message: 'Invoice not found'
+      });
+    }
+
+    // KPO and Distributor can edit at ANY stage
+    const allowedRoles = ['distributor', 'computer_operator'];
+    const canEditAnyStage = allowedRoles.includes(req.user.role);
+
+    // Other roles can only edit issued invoices
+    if (!canEditAnyStage && invoice.status !== 'issued') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot edit invoice with status: ${invoice.status}. Only KPO and Distributor can edit.`
+      });
+    }
+
+    // Other roles cannot edit fully paid invoices (KPO/Distributor can)
+    if (!canEditAnyStage && invoice.paymentStatus === 'paid') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot edit fully paid invoice. Only KPO and Distributor can edit.'
+      });
+    }
+
+    // Store original values for comparison
+    const originalItems = invoice.items.map(item => ({
+      product: item.product.toString(),
+      quantity: item.quantity,
+      salePrice: item.salePrice,
+      costPrice: item.costPrice,
+      netAmount: item.netAmount
+    }));
+    const originalGrandTotal = invoice.grandTotal;
+    const originalTotalCost = invoice.totalCost;
+
+    // Build updated items - KEEP ORIGINAL RATES, only change quantities
+    const updatedItems = [];
+    let totalCost = 0;
+
+    for (const newItem of items) {
+      // Find original item to get the ORIGINAL rate
+      const originalItem = originalItems.find(oi => oi.product === newItem.product.toString() || oi.product === newItem.product);
+      
+      if (!originalItem) {
+        // New item added - this shouldn't happen in quantity-only edit
+        return res.status(400).json({
+          success: false,
+          message: `Cannot add new products when editing invoice. Product ${newItem.product} was not in original invoice.`
+        });
+      }
+
+      // Find the existing item in invoice
+      const existingItem = invoice.items.find(i => i.product.toString() === originalItem.product);
+      
+      // CRITICAL: Use ORIGINAL rate, not new rate
+      const salePrice = existingItem.salePrice;
+      const costPrice = existingItem.costPrice;
+      const newQuantity = newItem.quantity;
+
+      // Calculate new totals with ORIGINAL rates
+      const lineTotal = salePrice * newQuantity;
+      const discount = newItem.discount || existingItem.discount || 0;
+      const netAmount = lineTotal - discount;
+      const lineCost = costPrice * newQuantity;
+      const lineProfit = netAmount - lineCost;
+
+      totalCost += lineCost;
+
+      // Calculate inventory adjustment
+      const qtyDifference = newQuantity - existingItem.quantity;
+
+      // Adjust inventory if quantity changed
+      if (qtyDifference !== 0) {
+        try {
+          if (qtyDifference > 0) {
+            // Quantity increased - need to remove more stock
+            const product = await Product.findById(existingItem.product);
+            if (product && product.currentStock < qtyDifference) {
+              return res.status(400).json({
+                success: false,
+                message: `Insufficient stock for ${existingItem.productName}. Available: ${product.currentStock}, Additional needed: ${qtyDifference}`
+              });
+            }
+            
+            await InventoryService.removeStock({
+              productId: existingItem.product,
+              quantity: qtyDifference,
+              referenceType: 'Invoice',
+              referenceId: invoice._id,
+              referenceNumber: `${invoice.invoiceNumber}-EDIT`,
+              userId: req.user._id,
+              userName: req.user.fullName,
+              transactionDate: new Date()
+            });
+          } else {
+            // Quantity decreased - return stock
+            await InventoryService.addStock({
+              productId: existingItem.product,
+              quantity: Math.abs(qtyDifference),
+              costPerUnit: costPrice,
+              referenceType: 'Invoice',
+              referenceId: invoice._id,
+              referenceNumber: `${invoice.invoiceNumber}-EDIT`,
+              userId: req.user._id,
+              userName: req.user.fullName,
+              transactionDate: new Date()
+            });
+          }
+        } catch (stockError) {
+          console.error(`Failed to adjust stock for ${existingItem.productName}:`, stockError);
+          return res.status(500).json({
+            success: false,
+            message: `Failed to adjust stock: ${stockError.message}`
+          });
+        }
+      }
+
+      updatedItems.push({
+        product: existingItem.product,
+        productName: existingItem.productName,
+        productSku: existingItem.productSku,
+        quantity: newQuantity,
+        unit: existingItem.unit,
+        unitName: existingItem.unitName,
+        salePrice: salePrice, // UNCHANGED
+        costPrice: costPrice, // UNCHANGED
+        lineTotal,
+        discount,
+        netAmount,
+        lineProfit
+      });
+    }
+
+    // Update invoice items
+    invoice.items = updatedItems;
+    if (remarks !== undefined) invoice.remarks = remarks;
+
+    // Save invoice (pre-save hook will recalculate totals)
+    await invoice.save();
+
+    // Update accounting entries with the difference
+    try {
+      await AccountingService.updateSalesEntry({
+        customerId: invoice.customer,
+        customerName: invoice.customerName,
+        invoiceId: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        oldAmount: originalGrandTotal,
+        newAmount: invoice.grandTotal,
+        oldCostOfGoodsSold: originalTotalCost,
+        newCostOfGoodsSold: totalCost,
+        userId: req.user._id,
+        userName: req.user.fullName,
+        entryDate: new Date()
+      });
+    } catch (acctError) {
+      console.error('Failed to update accounting entries:', acctError);
+      // Continue - invoice is already updated
+    }
+
+    // Also update the related order if exists
+    if (invoice.order) {
+      const order = await Order.findById(invoice.order);
+      if (order) {
+        order.items = updatedItems.map(item => ({
+          product: item.product,
+          productName: item.productName,
+          productSku: item.productSku,
+          quantity: item.quantity,
+          unitName: item.unitName,
+          salePrice: item.salePrice,
+          lineTotal: item.lineTotal,
+          discount: item.discount,
+          netAmount: item.netAmount
+        }));
+        order.subtotal = invoice.subtotal;
+        order.totalDiscount = invoice.totalDiscount;
+        order.grandTotal = invoice.grandTotal;
+        await order.save();
+      }
+    }
+
+    await logFinancialTransaction(req, {
+      action: 'UPDATE',
+      module: 'invoice',
+      entityType: 'Invoice',
+      entityId: invoice._id,
+      entityNumber: invoice.invoiceNumber,
+      description: `Invoice updated - old total: ${originalGrandTotal}, new total: ${invoice.grandTotal}`,
+      amount: invoice.grandTotal
+    });
+
+    res.json({
+      success: true,
+      message: 'Invoice updated successfully',
+      data: invoice
+    });
+  } catch (error) {
+    console.error('Update invoice error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Server error updating invoice'
+    });
+  }
+};
+
+// @desc    Delete order (KPO and Distributor only)
+// @route   DELETE /api/orders/:id
+// @access  Private (Computer Operator, Distributor)
+exports.deleteOrder = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const order = await Order.findById(req.params.id).session(session);
+    
+    if (!order) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+
+    // Only KPO and Distributor can delete
+    const allowedRoles = ['distributor', 'computer_operator'];
+    if (!allowedRoles.includes(req.user.role)) {
+      await session.abortTransaction();
+      return res.status(403).json({
+        success: false,
+        message: 'Only KPO and Distributor can delete orders'
+      });
+    }
+
+    // Get customer info for ledger
+    const customer = await Customer.findById(order.customer).session(session);
+    
+    // Store order info for logging
+    const orderNumber = order.orderNumber;
+    const customerName = customer?.businessName || order.customerName || 'Unknown';
+    const grandTotal = order.grandTotal;
+
+    // Calculate total COGS for reversal
+    let totalCogs = 0;
+    for (const item of order.items) {
+      totalCogs += (item.costPrice || 0) * item.quantity;
+    }
+
+    // If stock was deducted (order was confirmed/dispatched/delivered), restore it
+    if (['confirmed', 'dispatched', 'delivered'].includes(order.status)) {
+      for (const item of order.items) {
+        await InventoryService.addStock({
+          productId: item.product,
+          quantity: item.quantity,
+          costPerUnit: item.costPrice || item.salePrice * 0.7,
+          referenceType: 'OrderDelete',
+          referenceId: order._id,
+          referenceNumber: `${order.orderNumber}-DEL`,
+          userId: req.user._id,
+          userName: req.user.fullName,
+          transactionType: 'sale_reversal'
+        });
+      }
+    }
+
+    // Delete related invoice if exists
+    if (order.invoiceGenerated && order.invoice) {
+      await Invoice.findByIdAndDelete(order.invoice).session(session);
+    }
+
+    // Reverse accounting entries
+    await AccountingService.reverseOrderEntry({
+      orderId: order._id,
+      invoiceNumber: order.orderNumber,
+      customerId: order.customer,
+      customerName: customerName,
+      salesAmount: grandTotal,
+      cogsAmount: totalCogs,
+      userId: req.user._id,
+      userName: req.user.fullName
+    });
+
+    // Delete the order
+    await Order.findByIdAndDelete(req.params.id).session(session);
+
+    await session.commitTransaction();
+
+    await logFinancialTransaction(req, {
+      action: 'DELETE',
+      module: 'order',
+      entityType: 'Order',
+      entityId: req.params.id,
+      entityNumber: orderNumber,
+      description: `Order ${orderNumber} for ${customerName} deleted - stock restored & ledger reversed`,
+      amount: grandTotal
+    });
+
+    res.json({
+      success: true,
+      message: 'Order deleted successfully'
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Delete order error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Server error deleting order'
+    });
+  } finally {
+    session.endSession();
   }
 };

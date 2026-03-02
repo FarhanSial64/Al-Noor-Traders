@@ -83,6 +83,14 @@ const ProductForm = () => {
         if (product.image) {
           setImagePreview(product.image);
         }
+      } else {
+        // Fetch next product code for new products (for display only - actual code generated on backend)
+        try {
+          const nextCodeRes = await productService.getNextProductCode();
+          setFormData(prev => ({ ...prev, sku: nextCodeRes.data?.nextCode || '' }));
+        } catch (err) {
+          console.log('Could not fetch next product code');
+        }
       }
     } catch (error) {
       toast.error('Failed to load form data');
@@ -209,10 +217,13 @@ const ProductForm = () => {
                   fullWidth
                   label="SKU (Product Code)"
                   name="sku"
-                  value={formData.sku}
+                  value={formData.sku || '(Auto-generated)'}
                   onChange={handleChange}
-                  required
-                  helperText="Unique product identifier"
+                  disabled={!isEdit}
+                  helperText={isEdit ? "Product code cannot be changed" : "Will be auto-generated on save"}
+                  InputProps={{
+                    readOnly: !isEdit,
+                  }}
                 />
               </Grid>
               <Grid item xs={12} md={6}>

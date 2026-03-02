@@ -4,12 +4,17 @@ const { Product, Unit } = require('../models/Product');
 const InventoryService = require('../services/inventoryService');
 const AccountingService = require('../services/accountingService');
 const { logFinancialTransaction } = require('../middleware/auditLogger');
+const mongoose = require('mongoose');
 
 /**
  * Purchase Controller
  * 
  * CRITICAL: Purchase prices are manually entered by Computer Operator.
  * The system does NOT use fixed product prices.
+ * 
+ * After every purchase save/edit/delete:
+ * - Recalculate weighted average cost price from ALL purchases
+ * - Update sale price with 8% margin
  */
 
 // @desc    Get all purchases
@@ -83,7 +88,7 @@ exports.getPurchase = async (req, res) => {
       .populate('createdBy', 'fullName')
       .populate('approvedBy', 'fullName')
       .populate('receivedBy', 'fullName')
-      .populate('items.product', 'name sku');
+      .populate('items.product', 'name sku piecesPerCarton');
 
     if (!purchase) {
       return res.status(404).json({
@@ -109,6 +114,9 @@ exports.getPurchase = async (req, res) => {
 // @route   POST /api/purchases
 // @access  Private (Computer Operator, Distributor)
 exports.createPurchase = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
   try {
     const { 
       vendor: vendorId, 
@@ -121,8 +129,9 @@ exports.createPurchase = async (req, res) => {
     } = req.body;
 
     // Get vendor
-    const vendor = await Vendor.findById(vendorId);
+    const vendor = await Vendor.findById(vendorId).session(session);
     if (!vendor) {
+      await session.abortTransaction();
       return res.status(404).json({
         success: false,
         message: 'Vendor not found'
@@ -130,6 +139,7 @@ exports.createPurchase = async (req, res) => {
     }
 
     if (!vendor.isActive) {
+      await session.abortTransaction();
       return res.status(400).json({
         success: false,
         message: 'Cannot create purchase from inactive vendor'
@@ -138,17 +148,38 @@ exports.createPurchase = async (req, res) => {
 
     // Build purchase items with manually entered prices
     const purchaseItems = [];
+    const affectedProductIds = [];
+    
     for (const item of items) {
-      const product = await Product.findById(item.product);
+      const product = await Product.findById(item.product).session(session);
       if (!product) {
+        await session.abortTransaction();
         return res.status(404).json({
           success: false,
           message: `Product not found: ${item.product}`
         });
       }
 
-      // CRITICAL: Use the price entered by KPO, NOT from product master
-      const lineTotal = item.quantity * item.purchasePrice;
+      // Validate purchase price
+      const purchasePrice = Math.round(parseFloat(item.purchasePrice) * 100) / 100;
+      if (isNaN(purchasePrice) || purchasePrice < 0) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: `Invalid purchase price for ${product.name}`
+        });
+      }
+
+      const quantity = parseInt(item.quantity);
+      if (isNaN(quantity) || quantity < 1) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: `Invalid quantity for ${product.name}`
+        });
+      }
+
+      const lineTotal = Math.round(quantity * purchasePrice * 100) / 100;
 
       purchaseItems.push({
         product: product._id,
@@ -157,13 +188,15 @@ exports.createPurchase = async (req, res) => {
         cartons: item.cartons || 0,
         pieces: item.pieces || 0,
         piecesPerCarton: item.piecesPerCarton || product.piecesPerCarton || 1,
-        quantity: item.quantity,
+        quantity: quantity,
         unitName: 'Pieces',
-        purchasePrice: item.purchasePrice, // Manually entered price per piece
-        costPerUnit: item.purchasePrice,
+        purchasePrice: purchasePrice,
+        costPerUnit: purchasePrice,
         lineTotal,
-        receivedQuantity: item.quantity // Immediately mark as received
+        receivedQuantity: quantity
       });
+      
+      affectedProductIds.push(product._id);
     }
 
     // Create purchase with received status (no pending)
@@ -174,8 +207,8 @@ exports.createPurchase = async (req, res) => {
       vendorInvoiceNumber,
       vendorInvoiceDate,
       items: purchaseItems,
-      taxAmount,
-      otherCharges,
+      taxAmount: Math.round(parseFloat(taxAmount || 0) * 100) / 100,
+      otherCharges: Math.round(parseFloat(otherCharges || 0) * 100) / 100,
       remarks,
       createdBy: req.user._id,
       createdByName: req.user.fullName,
@@ -186,9 +219,9 @@ exports.createPurchase = async (req, res) => {
       receivedAt: new Date()
     });
 
-    await purchase.save();
+    await purchase.save({ session });
 
-    // Immediately update inventory
+    // Update inventory for each item
     for (const item of purchaseItems) {
       await InventoryService.addStock({
         productId: item.product,
@@ -202,6 +235,9 @@ exports.createPurchase = async (req, res) => {
       });
     }
 
+    // Collect product IDs for pricing recalculation AFTER transaction
+    const uniqueProductIds = [...new Set(affectedProductIds.map(id => id.toString()))];
+
     // Create accounting entry
     await AccountingService.createPurchaseEntry({
       vendorId: purchase.vendor,
@@ -214,22 +250,36 @@ exports.createPurchase = async (req, res) => {
       entryDate: purchase.purchaseDate
     });
 
+    await session.commitTransaction();
+    session.endSession();
+
+    // CRITICAL: Recalculate pricing AFTER transaction commits to avoid write conflicts
+    try {
+      await InventoryService.recalculatePricingForProducts(uniqueProductIds);
+    } catch (pricingError) {
+      console.error('Pricing recalculation error (non-fatal):', pricingError);
+    }
+
     await logFinancialTransaction(req, {
       action: 'CREATE',
       module: 'purchase',
       entityType: 'Purchase',
       entityId: purchase._id,
       entityNumber: purchase.purchaseNumber,
-      description: `Purchase created from ${vendor.businessName} - inventory updated`,
+      description: `Purchase created from ${vendor.businessName} - inventory & pricing updated`,
       amount: purchase.grandTotal
     });
 
     res.status(201).json({
       success: true,
-      message: 'Purchase created & inventory updated successfully',
+      message: 'Purchase created & pricing recalculated successfully',
       data: purchase
     });
   } catch (error) {
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+    session.endSession();
     console.error('Create purchase error:', error);
     res.status(500).json({
       success: false,
@@ -238,10 +288,13 @@ exports.createPurchase = async (req, res) => {
   }
 };
 
-// @desc    Update purchase (only if not yet received/stock not updated - OR by distributor anytime)
+// @desc    Update purchase (KPO and Distributor can edit at ANY stage)
 // @route   PUT /api/purchases/:id
-// @access  Private (Computer Operator before stock update, Distributor anytime)
+// @access  Private (Computer Operator, Distributor)
 exports.updatePurchase = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
   try {
     const { 
       vendor: vendorId, 
@@ -253,34 +306,41 @@ exports.updatePurchase = async (req, res) => {
       remarks 
     } = req.body;
 
-    const purchase = await Purchase.findById(req.params.id);
+    const purchase = await Purchase.findById(req.params.id).session(session);
     
     if (!purchase) {
+      await session.abortTransaction();
       return res.status(404).json({
         success: false,
         message: 'Purchase not found'
       });
     }
 
-    // Check if user is distributor - distributors can edit anytime
-    const isDistributor = req.user.role === 'distributor';
-
-    // Non-distributors can only edit if stock has not been updated
-    if (purchase.stockUpdated && !isDistributor) {
-      return res.status(400).json({
+    // KPO and Distributor can edit at any stage
+    const allowedRoles = ['distributor', 'computer_operator'];
+    if (!allowedRoles.includes(req.user.role)) {
+      await session.abortTransaction();
+      return res.status(403).json({
         success: false,
-        message: 'Cannot edit purchase after stock has been updated. Only distributor can edit.'
+        message: 'Only KPO and Distributor can edit purchases'
       });
     }
 
+    // Collect all affected product IDs (both original and new)
+    const affectedProductIds = new Set();
+    
     // Store original items for inventory adjustment if stock was already updated
     const originalItems = purchase.stockUpdated ? [...purchase.items] : null;
+    if (originalItems) {
+      originalItems.forEach(item => affectedProductIds.add(item.product.toString()));
+    }
 
     // Get vendor if changed
     let vendor = null;
     if (vendorId) {
-      vendor = await Vendor.findById(vendorId);
+      vendor = await Vendor.findById(vendorId).session(session);
       if (!vendor) {
+        await session.abortTransaction();
         return res.status(404).json({
           success: false,
           message: 'Vendor not found'
@@ -290,19 +350,39 @@ exports.updatePurchase = async (req, res) => {
 
     // Process items if provided
     if (items && items.length > 0) {
-      const { Product } = require('../models/Product');
       const purchaseItems = [];
 
       for (const item of items) {
-        const product = await Product.findById(item.product);
+        const product = await Product.findById(item.product).session(session);
         if (!product) {
+          await session.abortTransaction();
           return res.status(404).json({
             success: false,
             message: `Product not found: ${item.product}`
           });
         }
 
-        const lineTotal = item.quantity * item.purchasePrice;
+        // Validate and round prices
+        const purchasePrice = Math.round(parseFloat(item.purchasePrice) * 100) / 100;
+        const quantity = parseInt(item.quantity);
+        
+        if (isNaN(purchasePrice) || purchasePrice < 0) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            success: false,
+            message: `Invalid purchase price for ${product.name}`
+          });
+        }
+        
+        if (isNaN(quantity) || quantity < 1) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            success: false,
+            message: `Invalid quantity for ${product.name}`
+          });
+        }
+
+        const lineTotal = Math.round(quantity * purchasePrice * 100) / 100;
 
         purchaseItems.push({
           product: product._id,
@@ -311,13 +391,15 @@ exports.updatePurchase = async (req, res) => {
           cartons: item.cartons || 0,
           pieces: item.pieces || 0,
           piecesPerCarton: item.piecesPerCarton || product.piecesPerCarton || 1,
-          quantity: item.quantity,
+          quantity: quantity,
           unitName: 'Pieces',
-          purchasePrice: item.purchasePrice,
-          costPerUnit: item.purchasePrice,
+          purchasePrice: purchasePrice,
+          costPerUnit: purchasePrice,
           lineTotal,
-          receivedQuantity: purchase.stockUpdated ? item.quantity : 0
+          receivedQuantity: purchase.stockUpdated ? quantity : 0
         });
+        
+        affectedProductIds.add(product._id.toString());
       }
 
       purchase.items = purchaseItems;
@@ -330,16 +412,16 @@ exports.updatePurchase = async (req, res) => {
       purchase.vendorCode = vendor.vendorCode;
     }
 
-    // Update other fields
+    // Update other fields with proper rounding
     if (vendorInvoiceNumber !== undefined) purchase.vendorInvoiceNumber = vendorInvoiceNumber;
     if (vendorInvoiceDate !== undefined) purchase.vendorInvoiceDate = vendorInvoiceDate;
-    if (taxAmount !== undefined) purchase.taxAmount = taxAmount;
-    if (otherCharges !== undefined) purchase.otherCharges = otherCharges;
+    if (taxAmount !== undefined) purchase.taxAmount = Math.round(parseFloat(taxAmount || 0) * 100) / 100;
+    if (otherCharges !== undefined) purchase.otherCharges = Math.round(parseFloat(otherCharges || 0) * 100) / 100;
     if (remarks !== undefined) purchase.remarks = remarks;
 
-    // If stock was already updated (distributor editing), adjust inventory
+    // If stock was already updated, adjust inventory using difference method
     if (originalItems && items && items.length > 0) {
-      // First, reverse the original stock entries
+      // First, reverse the original stock entries (skip stock check - this is an adjustment)
       for (const origItem of originalItems) {
         await InventoryService.removeStock({
           productId: origItem.product,
@@ -348,7 +430,8 @@ exports.updatePurchase = async (req, res) => {
           referenceId: purchase._id,
           referenceNumber: `${purchase.purchaseNumber}-REV`,
           userId: req.user._id,
-          userName: req.user.fullName
+          userName: req.user.fullName,
+          skipStockCheck: true // Skip validation for adjustments
         });
       }
 
@@ -380,7 +463,22 @@ exports.updatePurchase = async (req, res) => {
       });
     }
 
-    await purchase.save();
+    await purchase.save({ session });
+
+    // Collect product IDs for pricing recalculation AFTER transaction
+    const uniqueProductIds = [...affectedProductIds];
+
+    await session.commitTransaction();
+    session.endSession();
+
+    // CRITICAL: Recalculate pricing AFTER transaction commits to avoid write conflicts
+    // This uses aggregation which reads committed data
+    try {
+      await InventoryService.recalculatePricingForProducts(uniqueProductIds);
+    } catch (pricingError) {
+      console.error('Pricing recalculation error (non-fatal):', pricingError);
+      // Don't fail the request - pricing can be recalculated later
+    }
 
     await logFinancialTransaction(req, {
       action: 'UPDATE',
@@ -388,16 +486,20 @@ exports.updatePurchase = async (req, res) => {
       entityType: 'Purchase',
       entityId: purchase._id,
       entityNumber: purchase.purchaseNumber,
-      description: originalItems ? `Purchase updated by distributor with inventory adjustment` : `Purchase updated`,
+      description: originalItems ? `Purchase updated with inventory & pricing adjustment` : `Purchase updated with pricing recalculation`,
       amount: purchase.grandTotal
     });
 
     res.json({
       success: true,
-      message: 'Purchase updated successfully',
+      message: 'Purchase updated & pricing recalculated successfully',
       data: purchase
     });
   } catch (error) {
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+    session.endSession();
     console.error('Update purchase error:', error);
     res.status(500).json({
       success: false,
@@ -546,6 +648,115 @@ exports.updatePurchaseStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Server error updating purchase status'
+    });
+  }
+};
+
+// @desc    Delete purchase (KPO and Distributor only)
+// @route   DELETE /api/purchases/:id
+// @access  Private (Computer Operator, Distributor)
+exports.deletePurchase = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
+  try {
+    const purchase = await Purchase.findById(req.params.id).session(session);
+    
+    if (!purchase) {
+      await session.abortTransaction();
+      return res.status(404).json({
+        success: false,
+        message: 'Purchase not found'
+      });
+    }
+
+    // Only KPO and Distributor can delete
+    const allowedRoles = ['distributor', 'computer_operator'];
+    if (!allowedRoles.includes(req.user.role)) {
+      await session.abortTransaction();
+      return res.status(403).json({
+        success: false,
+        message: 'Only KPO and Distributor can delete purchases'
+      });
+    }
+
+    // Collect affected product IDs
+    const affectedProductIds = purchase.items.map(item => item.product.toString());
+
+    // If stock was updated, reverse it
+    if (purchase.stockUpdated) {
+      for (const item of purchase.items) {
+        // For KPO/Distributor deletions, allow stock to go negative if necessary
+        // This is an administrative action and stock adjustments will be handled
+        await InventoryService.removeStock({
+          productId: item.product,
+          quantity: item.quantity,
+          referenceType: 'PurchaseDelete',
+          referenceId: purchase._id,
+          referenceNumber: `${purchase.purchaseNumber}-DEL`,
+          userId: req.user._id,
+          userName: req.user.fullName,
+          transactionType: 'purchase_reversal',
+          skipStockCheck: true // KPO/Distributor can delete regardless of stock level
+        });
+      }
+    }
+
+    // Reverse accounting entries
+    await AccountingService.reversePurchaseEntry({
+      purchaseId: purchase._id,
+      purchaseNumber: purchase.purchaseNumber,
+      vendorId: purchase.vendor,
+      vendorName: purchase.vendorName,
+      amount: purchase.grandTotal,
+      userId: req.user._id,
+      userName: req.user.fullName
+    });
+
+    // Store purchase info for logging
+    const purchaseNumber = purchase.purchaseNumber;
+    const vendorName = purchase.vendorName;
+    const grandTotal = purchase.grandTotal;
+
+    // Delete the purchase
+    await Purchase.findByIdAndDelete(req.params.id).session(session);
+
+    // Collect product IDs for pricing recalculation AFTER transaction
+    const uniqueProductIds = [...new Set(affectedProductIds)];
+
+    await session.commitTransaction();
+    session.endSession();
+
+    // CRITICAL: Recalculate pricing AFTER transaction commits to avoid write conflicts
+    try {
+      await InventoryService.recalculatePricingForProducts(uniqueProductIds);
+    } catch (pricingError) {
+      console.error('Pricing recalculation error (non-fatal):', pricingError);
+    }
+
+    await logFinancialTransaction(req, {
+      action: 'DELETE',
+      module: 'purchase',
+      entityType: 'Purchase',
+      entityId: req.params.id,
+      entityNumber: purchaseNumber,
+      description: `Purchase ${purchaseNumber} from ${vendorName} deleted - stock reversed & pricing recalculated`,
+      amount: grandTotal
+    });
+
+    res.json({
+      success: true,
+      message: 'Purchase deleted & pricing recalculated successfully'
+    });
+  } catch (error) {
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+    session.endSession();
+    console.error('Delete purchase error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Server error deleting purchase'
     });
   }
 };

@@ -313,6 +313,140 @@ class AccountingService {
   }
 
   /**
+   * Update sales journal entry (for invoice editing)
+   * Adjusts accounts receivable and customer balance by the difference
+   * @param {Object} params - Parameters for updating sales entry
+   */
+  static async updateSalesEntry({
+    customerId,
+    customerName,
+    invoiceId,
+    invoiceNumber,
+    oldAmount,
+    newAmount,
+    oldCostOfGoodsSold,
+    newCostOfGoodsSold,
+    userId,
+    userName,
+    entryDate
+  }) {
+    const amountDifference = newAmount - oldAmount;
+    const cogsDifference = (newCostOfGoodsSold || 0) - (oldCostOfGoodsSold || 0);
+
+    // If no change, nothing to do
+    if (Math.abs(amountDifference) < 0.01 && Math.abs(cogsDifference) < 0.01) {
+      return null;
+    }
+
+    // Get required accounts
+    const arAccount = await ChartOfAccount.findOne({ accountSubType: 'accounts_receivable' });
+    const salesAccount = await ChartOfAccount.findOne({ accountSubType: 'sales_revenue' });
+    const cogsAccount = await ChartOfAccount.findOne({ accountSubType: 'cost_of_goods_sold' });
+    const inventoryAccount = await ChartOfAccount.findOne({ accountSubType: 'inventory' });
+
+    if (!arAccount || !salesAccount) {
+      throw new Error('Required accounts not found in Chart of Accounts');
+    }
+
+    const lines = [];
+
+    // Adjust AR and Sales by the difference
+    if (Math.abs(amountDifference) > 0.01) {
+      if (amountDifference > 0) {
+        // Amount increased - debit AR, credit Sales
+        lines.push({
+          accountId: arAccount._id,
+          debitAmount: amountDifference,
+          creditAmount: 0,
+          description: `Invoice adjustment - increased for ${customerName}`,
+          partyType: 'customer',
+          partyId: customerId,
+          partyName: customerName
+        });
+        lines.push({
+          accountId: salesAccount._id,
+          debitAmount: 0,
+          creditAmount: amountDifference,
+          description: `Invoice adjustment - ${invoiceNumber}`
+        });
+      } else {
+        // Amount decreased - credit AR, debit Sales
+        lines.push({
+          accountId: arAccount._id,
+          debitAmount: 0,
+          creditAmount: Math.abs(amountDifference),
+          description: `Invoice adjustment - decreased for ${customerName}`,
+          partyType: 'customer',
+          partyId: customerId,
+          partyName: customerName
+        });
+        lines.push({
+          accountId: salesAccount._id,
+          debitAmount: Math.abs(amountDifference),
+          creditAmount: 0,
+          description: `Invoice adjustment - ${invoiceNumber}`
+        });
+      }
+    }
+
+    // Adjust COGS and Inventory by the difference
+    if (Math.abs(cogsDifference) > 0.01 && cogsAccount && inventoryAccount) {
+      if (cogsDifference > 0) {
+        // COGS increased - debit COGS, credit Inventory
+        lines.push({
+          accountId: cogsAccount._id,
+          debitAmount: cogsDifference,
+          creditAmount: 0,
+          description: `COGS adjustment - ${invoiceNumber}`
+        });
+        lines.push({
+          accountId: inventoryAccount._id,
+          debitAmount: 0,
+          creditAmount: cogsDifference,
+          description: `Inventory adjustment - ${invoiceNumber}`
+        });
+      } else {
+        // COGS decreased - credit COGS, debit Inventory
+        lines.push({
+          accountId: cogsAccount._id,
+          debitAmount: 0,
+          creditAmount: Math.abs(cogsDifference),
+          description: `COGS adjustment reversal - ${invoiceNumber}`
+        });
+        lines.push({
+          accountId: inventoryAccount._id,
+          debitAmount: Math.abs(cogsDifference),
+          creditAmount: 0,
+          description: `Inventory returned - ${invoiceNumber}`
+        });
+      }
+    }
+
+    if (lines.length === 0) {
+      return null;
+    }
+
+    const journalEntry = await this.createJournalEntry({
+      entryType: 'adjustment',
+      entryDate: entryDate || new Date(),
+      narration: `Invoice Adjustment ${invoiceNumber} - ${customerName}`,
+      lines,
+      sourceType: 'Invoice',
+      sourceId: invoiceId,
+      sourceNumber: invoiceNumber,
+      userId,
+      userName
+    });
+
+    // Update customer balance by the difference
+    await Customer.findByIdAndUpdate(customerId, {
+      $inc: { currentBalance: amountDifference }
+    });
+
+    return journalEntry;
+  }
+
+  /**
    * Create return entry (sales return / credit note)
    * Debit: Sales Returns
    * Credit: Accounts Receivable (Customer)
@@ -977,6 +1111,143 @@ class AccountingService {
       totalLiabilitiesAndEquity: totalLiabilities + totalEquity,
       isBalanced: Math.abs(totalAssets - (totalLiabilities + totalEquity)) < 1
     };
+  }
+
+  /**
+   * Reverse purchase journal entry (for delete)
+   * Debit: Accounts Payable (reduce liability)
+   * Credit: Inventory (reduce asset)
+   */
+  static async reversePurchaseEntry({
+    purchaseId,
+    purchaseNumber,
+    vendorId,
+    vendorName,
+    amount,
+    userId,
+    userName
+  }) {
+    const inventoryAccount = await ChartOfAccount.findOne({ accountSubType: 'inventory' });
+    const apAccount = await ChartOfAccount.findOne({ accountSubType: 'accounts_payable' });
+
+    if (!inventoryAccount || !apAccount) {
+      throw new Error('Required accounts not found in Chart of Accounts');
+    }
+
+    const journalEntry = await this.createJournalEntry({
+      entryType: 'purchase_reversal',
+      entryDate: new Date(),
+      narration: `Purchase ${purchaseNumber} DELETED - ${vendorName}`,
+      lines: [
+        {
+          accountId: apAccount._id,
+          debitAmount: amount,
+          creditAmount: 0,
+          description: `Payable reversed for ${vendorName}`,
+          partyType: 'vendor',
+          partyId: vendorId,
+          partyName: vendorName
+        },
+        {
+          accountId: inventoryAccount._id,
+          debitAmount: 0,
+          creditAmount: amount,
+          description: `Inventory reversed from ${vendorName}`
+        }
+      ],
+      sourceType: 'PurchaseReversal',
+      sourceId: purchaseId,
+      sourceNumber: `${purchaseNumber}-REV`,
+      userId,
+      userName
+    });
+
+    // Update vendor balance (reduce payable)
+    await Vendor.findByIdAndUpdate(vendorId, {
+      $inc: { currentBalance: -amount }
+    });
+
+    return journalEntry;
+  }
+
+  /**
+   * Reverse order/invoice entry (for delete)
+   * Reverses: Sales entry, AR entry, and COGS entry
+   */
+  static async reverseOrderEntry({
+    orderId,
+    invoiceNumber,
+    customerId,
+    customerName,
+    salesAmount,
+    cogsAmount,
+    userId,
+    userName
+  }) {
+    const arAccount = await ChartOfAccount.findOne({ accountSubType: 'accounts_receivable' });
+    const salesAccount = await ChartOfAccount.findOne({ accountSubType: 'sales_revenue' });
+    const cogsAccount = await ChartOfAccount.findOne({ accountSubType: 'cost_of_goods_sold' });
+    const inventoryAccount = await ChartOfAccount.findOne({ accountSubType: 'inventory' });
+
+    if (!arAccount || !salesAccount) {
+      throw new Error('Required accounts not found in Chart of Accounts');
+    }
+
+    const lines = [
+      // Reverse sales: Debit Sales, Credit AR
+      {
+        accountId: salesAccount._id,
+        debitAmount: salesAmount,
+        creditAmount: 0,
+        description: `Sales reversed for ${customerName}`
+      },
+      {
+        accountId: arAccount._id,
+        debitAmount: 0,
+        creditAmount: salesAmount,
+        description: `AR reversed for ${customerName}`,
+        partyType: 'customer',
+        partyId: customerId,
+        partyName: customerName
+      }
+    ];
+
+    // Reverse COGS if applicable
+    if (cogsAmount > 0 && cogsAccount && inventoryAccount) {
+      lines.push(
+        {
+          accountId: inventoryAccount._id,
+          debitAmount: cogsAmount,
+          creditAmount: 0,
+          description: `Inventory restored for ${customerName}`
+        },
+        {
+          accountId: cogsAccount._id,
+          debitAmount: 0,
+          creditAmount: cogsAmount,
+          description: `COGS reversed for ${customerName}`
+        }
+      );
+    }
+
+    const journalEntry = await this.createJournalEntry({
+      entryType: 'sale_reversal',
+      entryDate: new Date(),
+      narration: `Invoice ${invoiceNumber} DELETED - ${customerName}`,
+      lines,
+      sourceType: 'OrderReversal',
+      sourceId: orderId,
+      sourceNumber: `${invoiceNumber}-REV`,
+      userId,
+      userName
+    });
+
+    // Update customer balance (reduce receivable)
+    await Customer.findByIdAndUpdate(customerId, {
+      $inc: { currentBalance: -salesAmount }
+    });
+
+    return journalEntry;
   }
 }
 

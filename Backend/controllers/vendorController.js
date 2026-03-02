@@ -149,6 +149,7 @@ exports.getVendorLedger = async (req, res) => {
       });
     }
 
+    // Build query for date range
     const query = {
       partyType: 'vendor',
       partyId: vendorId
@@ -160,9 +161,52 @@ exports.getVendorLedger = async (req, res) => {
       if (endDate) query.entryDate.$lte = new Date(endDate);
     }
 
+    // Calculate opening balance if date filter is applied
+    let openingBalance = 0;
+    if (startDate) {
+      const previousEntries = await LedgerEntry.aggregate([
+        {
+          $match: {
+            partyType: 'vendor',
+            partyId: vendor._id,
+            entryDate: { $lt: new Date(startDate) }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalDebit: { $sum: '$debitAmount' },
+            totalCredit: { $sum: '$creditAmount' }
+          }
+        }
+      ]);
+
+      if (previousEntries.length > 0) {
+        // For vendor ledger: Credit increases balance (we owe them), Debit decreases (we paid)
+        // Using consistent formula: Debit - Credit
+        // Negative = We owe vendor (payable), Positive = Advance payment
+        openingBalance = previousEntries[0].totalDebit - previousEntries[0].totalCredit;
+      }
+    }
+
     const entries = await LedgerEntry.find(query)
       .sort({ entryDate: 1, createdAt: 1 })
       .populate('journalEntry', 'entryNumber narration');
+
+    // Calculate running balance for each entry (vendor-specific, not account-wide)
+    // Formula: Running Balance = Previous Balance + Debit - Credit
+    // For vendors: Credit = purchase (we owe more), Debit = payment (we paid)
+    // Negative balance = We owe vendor, Positive = Advance to vendor
+    let runningBalance = openingBalance;
+    const entriesWithBalance = entries.map(entry => {
+      const entryObj = entry.toObject();
+      runningBalance = runningBalance + entryObj.debitAmount - entryObj.creditAmount;
+      return {
+        ...entryObj,
+        runningBalance: runningBalance,
+        amount: entryObj.debitAmount || entryObj.creditAmount
+      };
+    });
 
     res.json({
       success: true,
@@ -173,11 +217,12 @@ exports.getVendorLedger = async (req, res) => {
           businessName: vendor.businessName,
           currentBalance: vendor.currentBalance
         },
-        entries,
+        openingBalance,
+        entries: entriesWithBalance,
         summary: {
           totalDebit: entries.reduce((sum, e) => sum + e.debitAmount, 0),
           totalCredit: entries.reduce((sum, e) => sum + e.creditAmount, 0),
-          closingBalance: vendor.currentBalance
+          closingBalance: runningBalance
         }
       }
     });

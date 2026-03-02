@@ -15,8 +15,9 @@ const PurchaseForm = () => {
   const { id } = useParams();
   const isEditMode = Boolean(id);
   const { user } = useSelector(state => state.auth);
-  const isDistributor = user?.role === 'distributor';
-  const [loading, setLoading] = useState(false);
+  // KPO and Distributor can edit at any stage including received status
+  const canEditAnyStage = user?.role === 'distributor' || user?.role === 'computer_operator';
+  const [loading, setLoading] = useState(isEditMode); // Start with loading true in edit mode
   const [saving, setSaving] = useState(false);
   const [vendors, setVendors] = useState([]);
   const [products, setProducts] = useState([]);
@@ -70,7 +71,10 @@ const PurchaseForm = () => {
       const [vendorRes, prodRes] = await Promise.all([vendorService.getVendors({ limit: 1000 }), productService.getProducts({ limit: 1000 })]);
       setVendors(vendorRes.data || []);
       setProducts(prodRes.data || []);
-    } catch (error) { toast.error('Failed to load data'); }
+    } catch (error) { 
+      toast.error('Failed to load data');
+      if (isEditMode) setLoading(false); // Stop loading on error in edit mode
+    }
   };
 
   const fetchPurchase = async () => {
@@ -80,27 +84,29 @@ const PurchaseForm = () => {
       const purchase = response.data;
       
       // Check if purchase can be edited
-      // Distributors can always edit, others can only edit if stock not updated
+      // KPO and Distributor can always edit, others can only edit if stock not updated
       if (purchase.stockUpdated) {
         setStockUpdated(true);
-        if (!isDistributor) {
+        if (!canEditAnyStage) {
           setCanEdit(false);
-          toast.error('This purchase cannot be edited - stock already updated. Only distributor can edit.');
+          toast.error('This purchase cannot be edited - stock already updated. Only KPO and Distributor can edit.');
         } else {
-          toast.info('You are editing a purchase with stock already updated. Inventory will be adjusted.');
+          toast('You are editing a purchase with stock already updated. Inventory will be adjusted.', { icon: 'ℹ️' });
         }
       }
 
-      // Find vendor from list
-      const vendor = vendors.find(v => v._id === purchase.vendor._id || v._id === purchase.vendor);
+      // Find vendor from list - handle both populated and ObjectId formats
+      const vendorId = purchase.vendor?._id || purchase.vendor;
+      const vendor = vendors.find(v => v._id === vendorId || v._id.toString() === vendorId?.toString());
       
-      // Map items with product objects
+      // Map items with product objects - handle both populated and ObjectId formats
       const items = purchase.items.map(item => {
-        const product = products.find(p => p._id === item.product._id || p._id === item.product);
+        const productId = item.product?._id || item.product;
+        const product = products.find(p => p._id === productId || p._id.toString() === productId?.toString());
         const piecesPerCarton = item.piecesPerCarton || product?.piecesPerCarton || 1;
         const pricePerCarton = item.purchasePrice * piecesPerCarton;
         return {
-          product: product || { _id: item.product, name: item.productName, sku: item.productSku },
+          product: product || { _id: productId, name: item.productName, sku: item.productSku },
           productName: item.productName,
           productCode: item.productSku,
           piecesPerCarton: piecesPerCarton,
@@ -121,7 +127,8 @@ const PurchaseForm = () => {
         items
       });
     } catch (error) {
-      toast.error('Failed to load purchase');
+      console.error('Failed to load purchase:', error);
+      toast.error(error.response?.data?.message || 'Failed to load purchase');
       navigate('/purchases');
     } finally {
       setLoading(false);
@@ -258,12 +265,12 @@ const PurchaseForm = () => {
     <Box>
       <PageHeader 
         title={isEditMode ? "Edit Purchase" : "Create New Purchase"} 
-        subtitle={isEditMode ? (stockUpdated ? (isDistributor ? "⚠️ Distributor Edit Mode - Inventory will be adjusted" : "This purchase cannot be edited - stock already updated") : "Modify purchase details") : "Record a purchase - inventory will be updated immediately"} 
+        subtitle={isEditMode ? (stockUpdated ? (canEditAnyStage ? "⚠️ Admin Edit Mode - Inventory will be adjusted" : "This purchase cannot be edited - stock already updated") : "Modify purchase details") : "Record a purchase - inventory will be updated immediately"} 
         backUrl="/purchases" 
       />
-      {isEditMode && stockUpdated && isDistributor && (
+      {isEditMode && stockUpdated && canEditAnyStage && (
         <Alert severity="warning" sx={{ mb: 2 }}>
-          <strong>Distributor Override:</strong> You are editing a purchase that already has inventory recorded. 
+          <strong>Admin Override:</strong> You are editing a purchase that already has inventory recorded. 
           Saving changes will automatically reverse the old inventory entries and apply new ones.
         </Alert>
       )}

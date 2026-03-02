@@ -72,7 +72,6 @@ const productSchema = new mongoose.Schema({
   },
   sku: {
     type: String,
-    required: [true, 'SKU is required'],
     unique: true,
     trim: true,
     uppercase: true
@@ -123,6 +122,18 @@ const productSchema = new mongoose.Schema({
     default: 0
   },
 
+  // Calculated pricing fields - updated after every purchase
+  // costPrice = Weighted average from ALL purchases
+  costPrice: {
+    type: Number,
+    default: 0
+  },
+  // salePrice = costPrice * 1.08 (8% margin)
+  salePrice: {
+    type: Number,
+    default: 0
+  },
+
   // Inventory
   currentStock: {
     type: Number,
@@ -154,6 +165,28 @@ const productSchema = new mongoose.Schema({
   }
 }, {
   timestamps: true
+});
+
+// Generate SKU (product code) before saving with retry for concurrent requests
+productSchema.pre('save', async function(next) {
+  if (this.isNew && !this.sku) {
+    // Use findOne with sort to get the highest SKU number, more reliable than count
+    const lastProduct = await mongoose.model('Product')
+      .findOne({ sku: { $regex: /^PROD\d{5}$/ } })
+      .sort({ sku: -1 })
+      .select('sku');
+    
+    let nextNumber = 1;
+    if (lastProduct && lastProduct.sku) {
+      const lastNumber = parseInt(lastProduct.sku.replace('PROD', ''), 10);
+      if (!isNaN(lastNumber)) {
+        nextNumber = lastNumber + 1;
+      }
+    }
+    
+    this.sku = `PROD${String(nextNumber).padStart(5, '0')}`;
+  }
+  next();
 });
 
 // Index for search

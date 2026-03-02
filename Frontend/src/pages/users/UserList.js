@@ -33,7 +33,7 @@ const UserList = () => {
   };
 
   const filteredUsers = users.filter(u => 
-    u.name?.toLowerCase().includes(search.toLowerCase()) || 
+    u.fullName?.toLowerCase().includes(search.toLowerCase()) || 
     u.username?.toLowerCase().includes(search.toLowerCase()) ||
     u.email?.toLowerCase().includes(search.toLowerCase())
   );
@@ -66,7 +66,7 @@ const UserList = () => {
               <TableBody>
                 {filteredUsers.map(user => (
                   <TableRow key={user._id} hover>
-                    <TableCell>{user.name}</TableCell>
+                    <TableCell>{user.fullName}</TableCell>
                     <TableCell>{user.username}</TableCell>
                     <TableCell>{user.email || '-'}</TableCell>
                     <TableCell>{user.phone || '-'}</TableCell>

@@ -6,10 +6,10 @@ const { authenticate } = require('../middleware/auth');
 const { authorize, PERMISSIONS } = require('../middleware/authorize');
 const { validate } = require('../middleware/validate');
 
-// Validation rules
+// Validation rules - SKU is now auto-generated, not required from frontend
 const productValidation = [
   body('name').trim().notEmpty().withMessage('Product name is required'),
-  body('sku').trim().notEmpty().withMessage('SKU is required'),
+  body('sku').optional().trim(),  // SKU is auto-generated if not provided
   body('category').isMongoId().withMessage('Valid category ID is required'),
   body('brand').isMongoId().withMessage('Valid brand ID is required'),
   body('piecesPerCarton').optional().isInt({ min: 1 }).withMessage('Pieces per carton must be at least 1')
@@ -29,6 +29,15 @@ const unitValidation = [
 ];
 
 // ========== PRODUCT ROUTES ==========
+
+// Get next product code (SKU) - must be before /:id route
+router.get(
+  '/next-code',
+  authenticate,
+  authorize(PERMISSIONS.PRODUCT_READ),
+  productController.getNextProductCode
+);
+
 router.get(
   '/',
   authenticate,

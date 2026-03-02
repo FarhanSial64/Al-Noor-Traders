@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Box, Card, CardContent, Grid, Typography, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Chip, Button, Divider } from '@mui/material';
-import { Receipt, CheckCircle, Cancel, Edit } from '@mui/icons-material';
+import { Receipt, CheckCircle, Cancel, Edit, Delete } from '@mui/icons-material';
 import { useSelector } from 'react-redux';
 import orderService from '../../services/orderService';
 import PageHeader from '../../components/common/PageHeader';
@@ -17,10 +17,12 @@ const OrderDetail = () => {
   const [order, setOrder] = useState(null);
   const [showConfirm, setShowConfirm] = useState(false);
   const [showCancel, setShowCancel] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
   const [processing, setProcessing] = useState(false);
 
   const canEditOrder = (user?.role === 'distributor' || user?.role === 'computer_operator') && 
                        order && ['pending', 'confirmed'].includes(order.status) && !order.invoiceGenerated;
+  const canDelete = user?.role === 'distributor' || user?.role === 'computer_operator';
 
   useEffect(() => { fetchOrder(); // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
@@ -35,6 +37,10 @@ const OrderDetail = () => {
 
   const handleCancelOrder = async () => {
     try { setProcessing(true); await orderService.updateOrderStatus(id, 'cancelled'); toast.success('Order cancelled'); fetchOrder(); setShowCancel(false); } catch (error) { toast.error('Failed to cancel order'); } finally { setProcessing(false); }
+  };
+
+  const handleDeleteOrder = async () => {
+    try { setProcessing(true); await orderService.deleteOrder(id); toast.success('Order deleted successfully'); navigate('/orders'); } catch (error) { toast.error(error.response?.data?.message || 'Failed to delete order'); setProcessing(false); }
   };
 
   const handleGenerateInvoice = async () => {
@@ -52,6 +58,7 @@ const OrderDetail = () => {
       <PageHeader title={`Order: ${order.orderNumber}`} backUrl="/orders" action={
         <Box sx={{ display: 'flex', gap: 1 }}>
           {canEditOrder && <Button variant="outlined" color="primary" startIcon={<Edit />} onClick={() => navigate(`/orders/${order._id}/edit`)}>Edit Order</Button>}
+          {canDelete && <Button variant="outlined" color="error" startIcon={<Delete />} onClick={() => setShowDelete(true)}>Delete</Button>}
           {order.status === 'pending' && <><Button variant="contained" color="success" startIcon={<CheckCircle />} onClick={() => setShowConfirm(true)}>Confirm</Button><Button variant="outlined" color="error" startIcon={<Cancel />} onClick={() => setShowCancel(true)}>Cancel</Button></>}
           {order.status === 'confirmed' && <Button variant="contained" color="primary" startIcon={<Receipt />} onClick={handleGenerateInvoice} disabled={processing}>Generate Invoice & Deliver</Button>}
         </Box>
@@ -114,8 +121,9 @@ const OrderDetail = () => {
         </Grid>
       </Grid>
 
-      <ConfirmDialog open={showConfirm} title="Confirm Order" message="Are you sure you want to confirm this order?" onConfirm={handleConfirmOrder} onCancel={() => setShowConfirm(false)} />
-      <ConfirmDialog open={showCancel} title="Cancel Order" message="Are you sure you want to cancel this order? This action cannot be undone." onConfirm={handleCancelOrder} onCancel={() => setShowCancel(false)} confirmColor="error" />
+      <ConfirmDialog open={showConfirm} title="Confirm Order" message="Are you sure you want to confirm this order?" onConfirm={handleConfirmOrder} onClose={() => setShowConfirm(false)} />
+      <ConfirmDialog open={showCancel} title="Cancel Order" message="Are you sure you want to cancel this order? This action cannot be undone." onConfirm={handleCancelOrder} onClose={() => setShowCancel(false)} confirmColor="error" />
+      <ConfirmDialog open={showDelete} title="Delete Order" message={`Are you sure you want to delete order ${order?.orderNumber}? This will reverse all inventory and accounting entries if any.`} onConfirm={handleDeleteOrder} onClose={() => setShowDelete(false)} confirmText="Delete" confirmColor="error" loading={processing} />
     </Box>
   );
 };

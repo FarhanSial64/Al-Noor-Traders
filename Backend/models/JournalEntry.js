@@ -90,7 +90,9 @@ const journalEntrySchema = new mongoose.Schema({
       'adjustment',      // Manual adjustment
       'opening',         // Opening balance
       'closing',         // Closing entry
-      'transfer'         // Bank/cash transfer
+      'transfer',        // Bank/cash transfer
+      'purchase_reversal', // Reverses a purchase entry
+      'sale_reversal'    // Reverses a sale entry
     ],
     required: true
   },
@@ -131,7 +133,7 @@ const journalEntrySchema = new mongoose.Schema({
   // Source Transaction Reference
   sourceType: {
     type: String,
-    enum: ['Invoice', 'Purchase', 'Payment', 'Receipt', 'Expense', 'Manual', 'Opening'],
+    enum: ['Invoice', 'Purchase', 'Payment', 'Receipt', 'Expense', 'Manual', 'Opening', 'PurchaseReversal', 'InvoiceReversal', 'OrderReversal'],
     required: true
   },
   sourceId: {

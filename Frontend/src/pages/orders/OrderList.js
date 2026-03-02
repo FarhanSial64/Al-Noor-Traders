@@ -4,7 +4,7 @@ import {
   Box, Card, CardContent, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, 
   TablePagination, Button, IconButton, Chip, Tooltip, Checkbox, Paper, Typography, useMediaQuery, useTheme 
 } from '@mui/material';
-import { Add, Visibility, Edit, Receipt, LocalShipping, Print } from '@mui/icons-material';
+import { Add, Visibility, Edit, Receipt, LocalShipping, Print, Delete } from '@mui/icons-material';
 import { useReactToPrint } from 'react-to-print';
 import orderService from '../../services/orderService';
 import userService from '../../services/userService';
@@ -36,8 +36,11 @@ const OrderList = () => {
   const [confirmDialog, setConfirmDialog] = useState({ open: false, title: '', message: '', onConfirm: null });
   const [invoicesToPrint, setInvoicesToPrint] = useState([]);
   const printRef = useRef();
+  const [deleteDialog, setDeleteDialog] = useState({ open: false, order: null });
+  const [deleting, setDeleting] = useState(false);
 
   const canEditOrder = user?.role === 'distributor' || user?.role === 'computer_operator';
+  const canDelete = user?.role === 'distributor' || user?.role === 'computer_operator';
   // Reserved for future permission checks
   // const canGenerateInvoice = user?.permissions?.includes('invoice:create') || user?.role === 'distributor';
   // const canUpdateOrder = user?.permissions?.includes('order:update') || user?.role === 'distributor';
@@ -64,6 +67,21 @@ const OrderList = () => {
 
   const formatCurrency = (amount) => new Intl.NumberFormat('en-PK', { style: 'currency', currency: 'PKR', minimumFractionDigits: 0 }).format(amount || 0);
   const getStatusColor = (s) => ({ pending: 'warning', confirmed: 'info', processing: 'primary', shipped: 'secondary', dispatched: 'secondary', delivered: 'success', cancelled: 'error' }[s] || 'default');
+
+  const handleDelete = async () => {
+    if (!deleteDialog.order) return;
+    try {
+      setDeleting(true);
+      await orderService.deleteOrder(deleteDialog.order._id);
+      toast.success(`Order ${deleteDialog.order.orderNumber} deleted successfully`);
+      setDeleteDialog({ open: false, order: null });
+      fetchOrders();
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Failed to delete order');
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   // Selection handlers
   const handleSelectAll = (event) => {
@@ -416,6 +434,13 @@ const OrderList = () => {
                               </IconButton>
                             </Tooltip>
                           )}
+                          {canDelete && (
+                            <Tooltip title="Delete Order">
+                              <IconButton size="small" color="error" onClick={() => setDeleteDialog({ open: true, order })}>
+                                <Delete fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}
@@ -508,6 +533,18 @@ const OrderList = () => {
                               Edit
                             </Button>
                           )}
+                          {canDelete && (
+                            <Button 
+                              size="small" 
+                              variant="outlined" 
+                              color="error"
+                              startIcon={<Delete />}
+                              onClick={() => setDeleteDialog({ open: true, order })}
+                              sx={{ flex: 1, minHeight: 44 }}
+                            >
+                              Delete
+                            </Button>
+                          )}
                         </Box>
                       </Paper>
                     ))}
@@ -545,7 +582,19 @@ const OrderList = () => {
         title={confirmDialog.title}
         message={confirmDialog.message}
         onConfirm={confirmDialog.onConfirm}
-        onCancel={() => setConfirmDialog({ open: false })}
+        onClose={() => setConfirmDialog({ open: false })}
+      />
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        open={deleteDialog.open}
+        title="Delete Order"
+        message={`Are you sure you want to delete order ${deleteDialog.order?.orderNumber}? This will reverse all inventory and accounting entries if any.`}
+        confirmText="Delete"
+        confirmColor="error"
+        loading={deleting}
+        onConfirm={handleDelete}
+        onClose={() => setDeleteDialog({ open: false, order: null })}
       />
 
       {/* Hidden Print Component */}

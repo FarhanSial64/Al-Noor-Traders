@@ -245,6 +245,5 @@ orderSchema.index({ customer: 1, orderDate: -1 });
 orderSchema.index({ bookedBy: 1, orderDate: -1 });
 orderSchema.index({ bookedBy: 1, createdAt: -1 }); // For dashboard queries
 orderSchema.index({ status: 1 });
-orderSchema.index({ orderNumber: 1 });
 
 module.exports = mongoose.model('Order', orderSchema);

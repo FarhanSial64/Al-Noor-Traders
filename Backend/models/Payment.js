@@ -198,7 +198,6 @@ paymentSchema.pre('save', async function(next) {
 paymentSchema.index({ partyType: 1, partyId: 1, paymentDate: -1 });
 paymentSchema.index({ paymentType: 1, paymentDate: -1 });
 paymentSchema.index({ createdBy: 1, paymentType: 1, paymentDate: -1 }); // For order booker dashboard
-paymentSchema.index({ paymentNumber: 1 });
 paymentSchema.index({ paymentMethod: 1 });
 
 module.exports = mongoose.model('Payment', paymentSchema);

@@ -236,7 +236,6 @@ invoiceSchema.pre('save', function(next) {
 
 // Indexes
 invoiceSchema.index({ customer: 1, invoiceDate: -1 });
-invoiceSchema.index({ invoiceNumber: 1 });
 invoiceSchema.index({ paymentStatus: 1 });
 
 module.exports = mongoose.model('Invoice', invoiceSchema);

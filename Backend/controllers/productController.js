@@ -9,6 +9,40 @@ const { createAuditLog } = require('../middleware/auditLogger');
 
 // ==================== PRODUCTS ====================
 
+// @desc    Get next product code (SKU)
+// @route   GET /api/products/next-code
+// @access  Private
+exports.getNextProductCode = async (req, res) => {
+  try {
+    // Use findOne with sort to get the highest SKU number, more reliable than count
+    const lastProduct = await Product
+      .findOne({ sku: { $regex: /^PROD\d{5}$/ } })
+      .sort({ sku: -1 })
+      .select('sku');
+    
+    let nextNumber = 1;
+    if (lastProduct && lastProduct.sku) {
+      const lastNumber = parseInt(lastProduct.sku.replace('PROD', ''), 10);
+      if (!isNaN(lastNumber)) {
+        nextNumber = lastNumber + 1;
+      }
+    }
+    
+    const nextCode = `PROD${String(nextNumber).padStart(5, '0')}`;
+    
+    res.json({
+      success: true,
+      data: { nextCode }
+    });
+  } catch (error) {
+    console.error('Get next product code error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error'
+    });
+  }
+};
+
 // @desc    Get all products
 // @route   GET /api/products
 // @access  Private

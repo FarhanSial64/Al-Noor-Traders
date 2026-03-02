@@ -481,7 +481,7 @@ exports.getProductPricingReport = async (req, res) => {
       
       // Calculate prices
       const avgCostPerCarton = avgCostPerPiece * piecesPerCarton;
-      const suggestedSalePricePerPiece = avgCostPerPiece > 0 ? Math.ceil(avgCostPerPiece * 1.05) : 0;
+      const suggestedSalePricePerPiece = avgCostPerPiece > 0 ? Math.round(avgCostPerPiece * 1.08 * 100) / 100 : 0;
       const suggestedSalePricePerCarton = suggestedSalePricePerPiece * piecesPerCarton;
 
       const item = {

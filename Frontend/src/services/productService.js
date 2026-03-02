@@ -12,6 +12,12 @@ const productService = {
     return response.data;
   },
 
+  // Get next product code (SKU) - auto-generated
+  getNextProductCode: async () => {
+    const response = await api.get('/products/next-code');
+    return response.data;
+  },
+
   createProduct: async (productData) => {
     const response = await api.post('/products', productData);
     return response.data;

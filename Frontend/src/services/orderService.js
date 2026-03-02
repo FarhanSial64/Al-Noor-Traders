@@ -60,6 +60,11 @@ const orderService = {
     const response = await api.post('/orders/bulk/invoices', { orderIds });
     return response.data;
   },
+
+  deleteOrder: async (id) => {
+    const response = await api.delete(`/orders/${id}`);
+    return response.data;
+  },
 };
 
 export default orderService;

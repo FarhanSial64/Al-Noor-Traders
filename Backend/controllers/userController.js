@@ -214,8 +214,8 @@ exports.updateUser = async (req, res) => {
       });
     }
 
-    // Cannot modify distributor
-    if (user.role === ROLES.DISTRIBUTOR && req.user._id !== user._id.toString()) {
+    // Cannot modify distributor (by another user)
+    if (user.role === ROLES.DISTRIBUTOR && req.user._id.toString() !== user._id.toString()) {
       return res.status(403).json({
         success: false,
         message: 'Cannot modify distributor account'

@@ -2,11 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { Box, Card, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TablePagination, Button, IconButton, Chip, Tooltip, Typography, Paper, useTheme, useMediaQuery } from '@mui/material';
-import { Add, Visibility, Edit } from '@mui/icons-material';
+import { Add, Visibility, Edit, Delete } from '@mui/icons-material';
 import purchaseService from '../../services/purchaseService';
 import PageHeader from '../../components/common/PageHeader';
 import Loading from '../../components/common/Loading';
 import SearchFilterBar from '../../components/common/SearchFilterBar';
+import ConfirmDialog from '../../components/common/ConfirmDialog';
 import toast from 'react-hot-toast';
 
 const PurchaseList = () => {
@@ -14,18 +15,36 @@ const PurchaseList = () => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const { user } = useSelector(state => state.auth);
-  const isDistributor = user?.role === 'distributor';
+  // KPO and Distributor can edit/delete any purchase at any status
+  const canEditDelete = user?.role === 'distributor' || user?.role === 'computer_operator';
   const [loading, setLoading] = useState(true);
   const [purchases, setPurchases] = useState([]);
   const [pagination, setPagination] = useState({ page: 0, limit: 25, total: 0 });
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
+  const [deleteDialog, setDeleteDialog] = useState({ open: false, purchase: null });
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => { fetchPurchases(); // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pagination.page, pagination.limit, status]);
 
   const fetchPurchases = async () => {
     try { setLoading(true); const response = await purchaseService.getPurchases({ page: pagination.page + 1, limit: pagination.limit, search, status }); setPurchases(response.data); setPagination(prev => ({ ...prev, total: response.pagination.total })); } catch (error) { toast.error('Failed to load purchases'); } finally { setLoading(false); }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteDialog.purchase) return;
+    try {
+      setDeleting(true);
+      await purchaseService.deletePurchase(deleteDialog.purchase._id);
+      toast.success('Purchase deleted successfully');
+      setDeleteDialog({ open: false, purchase: null });
+      fetchPurchases();
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Failed to delete purchase');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const formatCurrency = (amount) => new Intl.NumberFormat('en-PK', { style: 'currency', currency: 'PKR', minimumFractionDigits: 0 }).format(amount || 0);
@@ -47,10 +66,15 @@ const PurchaseList = () => {
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Typography variant="h6" color="primary.main" fontWeight="700">{formatCurrency(purchase.grandTotal)}</Typography>
         <Box>
-          {isDistributor && (
-            <IconButton size="small" onClick={() => navigate(`/purchases/${purchase._id}/edit`)} color="primary" sx={{ minWidth: 44, minHeight: 44 }}>
-              <Edit />
-            </IconButton>
+          {canEditDelete && (
+            <>
+              <IconButton size="small" onClick={() => navigate(`/purchases/${purchase._id}/edit`)} color="primary" sx={{ minWidth: 44, minHeight: 44 }}>
+                <Edit />
+              </IconButton>
+              <IconButton size="small" onClick={() => setDeleteDialog({ open: true, purchase })} color="error" sx={{ minWidth: 44, minHeight: 44 }}>
+                <Delete />
+              </IconButton>
+            </>
           )}
           <IconButton size="small" onClick={() => navigate(`/purchases/${purchase._id}`)} sx={{ minWidth: 44, minHeight: 44 }}>
             <Visibility />
@@ -112,12 +136,19 @@ const PurchaseList = () => {
                       <TableCell align="right">{formatCurrency(purchase.grandTotal)}</TableCell>
                       <TableCell><Chip label={purchase.status} size="small" color={getStatusColor(purchase.status)} /></TableCell>
                       <TableCell align="center">
-                        {isDistributor && (
-                          <Tooltip title="Edit Purchase">
-                            <IconButton size="small" onClick={() => navigate(`/purchases/${purchase._id}/edit`)} color="primary">
-                              <Edit fontSize="small" />
-                            </IconButton>
-                          </Tooltip>
+                        {canEditDelete && (
+                          <>
+                            <Tooltip title="Edit Purchase">
+                              <IconButton size="small" onClick={() => navigate(`/purchases/${purchase._id}/edit`)} color="primary">
+                                <Edit fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Delete Purchase">
+                              <IconButton size="small" onClick={() => setDeleteDialog({ open: true, purchase })} color="error">
+                                <Delete fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                          </>
                         )}
                         <Tooltip title="View Purchase Details">
                           <IconButton size="small" onClick={() => navigate(`/purchases/${purchase._id}`)}>
@@ -145,6 +176,18 @@ const PurchaseList = () => {
           </>
         )}
       </Card>
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        open={deleteDialog.open}
+        title="Delete Purchase"
+        message={`Are you sure you want to delete purchase ${deleteDialog.purchase?.purchaseNumber}? This will reverse all inventory and accounting entries.`}
+        confirmText="Delete"
+        confirmColor="error"
+        loading={deleting}
+        onConfirm={handleDelete}
+        onClose={() => setDeleteDialog({ open: false, purchase: null })}
+      />
     </Box>
   );
 };

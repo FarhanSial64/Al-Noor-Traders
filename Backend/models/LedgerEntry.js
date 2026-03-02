@@ -79,7 +79,7 @@ const ledgerEntrySchema = new mongoose.Schema({
   // Source Reference
   sourceType: {
     type: String,
-    enum: ['Invoice', 'Purchase', 'Payment', 'Receipt', 'Expense', 'Manual', 'Opening']
+    enum: ['Invoice', 'Purchase', 'Payment', 'Receipt', 'Expense', 'Manual', 'Opening', 'PurchaseReversal', 'InvoiceReversal', 'OrderReversal']
   },
   sourceId: {
     type: mongoose.Schema.Types.ObjectId

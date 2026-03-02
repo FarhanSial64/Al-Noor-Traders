@@ -19,7 +19,7 @@ const inventoryTransactionSchema = new mongoose.Schema({
   // Transaction Type
   transactionType: {
     type: String,
-    enum: ['purchase', 'sale', 'return_in', 'return_out', 'adjustment', 'adjustment_in', 'adjustment_out', 'edit_in', 'edit_out', 'opening'],
+    enum: ['purchase', 'purchase_reversal', 'sale', 'sale_reversal', 'return_in', 'return_out', 'adjustment', 'adjustment_in', 'adjustment_out', 'edit_in', 'edit_out', 'opening'],
     required: true
   },
 
@@ -48,7 +48,7 @@ const inventoryTransactionSchema = new mongoose.Schema({
   // Reference Document
   referenceType: {
     type: String,
-    enum: ['Purchase', 'Order', 'Invoice', 'Adjustment', 'Opening', 'Return'],
+    enum: ['Purchase', 'PurchaseAdjustment', 'PurchaseDelete', 'Order', 'OrderDelete', 'Invoice', 'Adjustment', 'Opening', 'Return'],
     required: true
   },
   referenceId: {
@@ -139,7 +139,7 @@ inventoryValuationSchema.methods.addStock = function(quantity, costPerUnit) {
 
 // Method to update valuation on sale
 inventoryValuationSchema.methods.removeStock = function(quantity) {
-  this.currentStock = Math.max(0, this.currentStock - quantity);
+  this.currentStock = this.currentStock - quantity; // Allow negative stock
   this.totalValue = this.currentStock * this.averageCost;
   this.lastUpdated = new Date();
 };

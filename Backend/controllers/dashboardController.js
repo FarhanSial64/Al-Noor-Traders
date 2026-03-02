@@ -1381,8 +1381,7 @@ exports.getSaleSummary = async (req, res) => {
           productName: { $first: '$items.productName' },
           unit: { $first: '$items.unit' },
           totalQuantity: { $sum: '$items.quantity' },
-          avgSalePrice: { $avg: '$items.salePrice' },
-          avgCostPrice: { $avg: '$items.costPrice' },
+          totalSalesValue: { $sum: '$items.lineTotal' },
           totalSales: { $sum: '$items.lineTotal' },
           totalCost: { $sum: { $multiply: ['$items.quantity', '$items.costPrice'] } },
           totalProfit: { $sum: '$items.profit' },
@@ -1394,8 +1393,19 @@ exports.getSaleSummary = async (req, res) => {
           productName: 1,
           unit: 1,
           totalQuantity: 1,
-          avgSalePrice: { $round: ['$avgSalePrice', 2] },
-          avgCostPrice: { $round: ['$avgCostPrice', 2] },
+          // Weighted average: total value / total quantity
+          avgSalePrice: { 
+            $round: [
+              { $cond: [{ $eq: ['$totalQuantity', 0] }, 0, { $divide: ['$totalSalesValue', '$totalQuantity'] }] }, 
+              2
+            ] 
+          },
+          avgCostPrice: { 
+            $round: [
+              { $cond: [{ $eq: ['$totalQuantity', 0] }, 0, { $divide: ['$totalCost', '$totalQuantity'] }] }, 
+              2
+            ] 
+          },
           totalSales: 1,
           totalCost: 1,
           totalProfit: 1,
@@ -1476,7 +1486,6 @@ exports.getPurchaseSummaryProducts = async (req, res) => {
           productName: { $first: '$items.productName' },
           unit: { $first: '$items.unit' },
           totalQuantity: { $sum: '$items.quantity' },
-          avgPurchasePrice: { $avg: '$items.purchasePrice' },
           totalPurchases: { $sum: { $multiply: ['$items.quantity', '$items.purchasePrice'] } },
           purchaseCount: { $addToSet: '$_id' }
         }
@@ -1486,7 +1495,13 @@ exports.getPurchaseSummaryProducts = async (req, res) => {
           productName: 1,
           unit: 1,
           totalQuantity: 1,
-          avgPurchasePrice: { $round: ['$avgPurchasePrice', 2] },
+          // Weighted average: total value / total quantity
+          avgPurchasePrice: { 
+            $round: [
+              { $cond: [{ $eq: ['$totalQuantity', 0] }, 0, { $divide: ['$totalPurchases', '$totalQuantity'] }] }, 
+              2
+            ] 
+          },
           totalPurchases: 1,
           purchaseCount: { $size: '$purchaseCount' }
         }

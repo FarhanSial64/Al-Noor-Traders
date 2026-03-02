@@ -7,78 +7,11 @@ const mongoose = require('mongoose');
 /**
  * Shop Controller
  * Handles customer e-commerce shop operations
+ * 
+ * PRICING: Uses Product.salePrice which is calculated from weighted average
+ * cost price (from ALL purchases) + 8% margin. This is updated automatically
+ * by InventoryService.updateProductPricing whenever a purchase is saved/edited/deleted.
  */
-
-// In-memory cache for sale prices (expires after 5 minutes)
-const priceCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
-// Calculate average purchase prices for multiple products at once (batch)
-const calculateSalePricesBatch = async (productIds) => {
-  const now = Date.now();
-  const uncachedIds = [];
-  const result = {};
-
-  // Check cache first
-  for (const id of productIds) {
-    const idStr = id.toString();
-    const cached = priceCache.get(idStr);
-    if (cached && now - cached.timestamp < CACHE_TTL) {
-      result[idStr] = cached.price;
-    } else {
-      uncachedIds.push(id);
-    }
-  }
-
-  // If all cached, return early
-  if (uncachedIds.length === 0) {
-    return result;
-  }
-
-  // Batch query for uncached products
-  const aggregateResult = await InventoryTransaction.aggregate([
-    {
-      $match: {
-        product: { $in: uncachedIds.map(id => new mongoose.Types.ObjectId(id)) },
-        transactionType: 'purchase',
-        quantityIn: { $gt: 0 }
-      }
-    },
-    {
-      $group: {
-        _id: '$product',
-        totalCost: { $sum: { $multiply: ['$unitCost', '$quantityIn'] } },
-        totalQty: { $sum: '$quantityIn' }
-      }
-    }
-  ]);
-
-  // Process results
-  for (const item of aggregateResult) {
-    const avgPrice = item.totalQty > 0 ? item.totalCost / item.totalQty : 0;
-    const salePrice = Math.round(avgPrice * 1.05 * 100) / 100; // 5% margin
-    const idStr = item._id.toString();
-    result[idStr] = salePrice;
-    priceCache.set(idStr, { price: salePrice, timestamp: now });
-  }
-
-  // Set 0 for products with no purchase history
-  for (const id of uncachedIds) {
-    const idStr = id.toString();
-    if (!(idStr in result)) {
-      result[idStr] = 0;
-      priceCache.set(idStr, { price: 0, timestamp: now });
-    }
-  }
-
-  return result;
-};
-
-// Single product price calculation (uses batch internally)
-const calculateSalePrice = async (productId) => {
-  const prices = await calculateSalePricesBatch([productId]);
-  return prices[productId.toString()] || 0;
-};
 
 // @desc    Get shop products with calculated prices
 // @route   GET /api/shop/products
@@ -119,11 +52,7 @@ exports.getShopProducts = async (req, res) => {
       Product.countDocuments(query)
     ]);
 
-    // Batch calculate all prices in one query
-    const productIds = products.map(p => p._id);
-    const prices = await calculateSalePricesBatch(productIds);
-
-    // Map products with prices
+    // Map products - use Product.salePrice directly (single source of truth)
     const productsWithPrices = products.map(product => ({
       _id: product._id,
       name: product.name,
@@ -133,7 +62,7 @@ exports.getShopProducts = async (req, res) => {
       brand: product.brand,
       unit: product.primaryUnit,
       stock: product.currentStock,
-      salePrice: prices[product._id.toString()] || 0,
+      salePrice: product.salePrice || 0, // Use salePrice from Product (weighted avg + 8% margin)
       image: product.image || null
     }));
 
@@ -173,8 +102,6 @@ exports.getProductDetail = async (req, res) => {
       });
     }
 
-    const salePrice = await calculateSalePrice(product._id);
-
     res.json({
       success: true,
       data: {
@@ -186,7 +113,7 @@ exports.getProductDetail = async (req, res) => {
         brand: product.brand,
         unit: product.primaryUnit,
         stock: product.currentStock,
-        salePrice,
+        salePrice: product.salePrice || 0, // Use salePrice from Product (weighted avg + 8% margin)
         image: product.image || null
       }
     });
@@ -257,7 +184,8 @@ exports.placeOrder = async (req, res) => {
         });
       }
 
-      const salePrice = await calculateSalePrice(product._id);
+      // Use salePrice from Product (weighted avg cost + 8% margin)
+      const salePrice = product.salePrice || 0;
 
       if (salePrice === 0) {
         return res.status(400).json({

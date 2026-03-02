@@ -154,6 +154,7 @@ exports.getCustomerLedger = async (req, res) => {
       });
     }
 
+    // Build query for date range
     const query = {
       partyType: 'customer',
       partyId: customerId
@@ -165,9 +166,49 @@ exports.getCustomerLedger = async (req, res) => {
       if (endDate) query.entryDate.$lte = new Date(endDate);
     }
 
+    // Calculate opening balance if date filter is applied
+    let openingBalance = 0;
+    if (startDate) {
+      const previousEntries = await LedgerEntry.aggregate([
+        {
+          $match: {
+            partyType: 'customer',
+            partyId: customer._id,
+            entryDate: { $lt: new Date(startDate) }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            totalDebit: { $sum: '$debitAmount' },
+            totalCredit: { $sum: '$creditAmount' }
+          }
+        }
+      ]);
+
+      if (previousEntries.length > 0) {
+        // For customer ledger: Debit increases balance (they owe us), Credit decreases
+        openingBalance = previousEntries[0].totalDebit - previousEntries[0].totalCredit;
+      }
+    }
+
     const entries = await LedgerEntry.find(query)
       .sort({ entryDate: 1, createdAt: 1 })
       .populate('journalEntry', 'entryNumber narration');
+
+    // Calculate running balance for each entry (customer-specific, not account-wide)
+    // Formula: Running Balance = Previous Balance + Debit - Credit
+    // Positive = Customer owes us, Negative = We owe customer (advance)
+    let runningBalance = openingBalance;
+    const entriesWithBalance = entries.map(entry => {
+      const entryObj = entry.toObject();
+      runningBalance = runningBalance + entryObj.debitAmount - entryObj.creditAmount;
+      return {
+        ...entryObj,
+        runningBalance: runningBalance,
+        amount: entryObj.debitAmount || entryObj.creditAmount
+      };
+    });
 
     res.json({
       success: true,
@@ -178,11 +219,12 @@ exports.getCustomerLedger = async (req, res) => {
           businessName: customer.businessName,
           currentBalance: customer.currentBalance
         },
-        entries,
+        openingBalance,
+        entries: entriesWithBalance,
         summary: {
           totalDebit: entries.reduce((sum, e) => sum + e.debitAmount, 0),
           totalCredit: entries.reduce((sum, e) => sum + e.creditAmount, 0),
-          closingBalance: customer.currentBalance
+          closingBalance: runningBalance
         }
       }
     });

@@ -77,4 +77,14 @@ router.put(
   purchaseController.updatePurchaseStatus
 );
 
+// Delete purchase - KPO and Distributor only
+router.delete(
+  '/:id',
+  authenticate,
+  authorize(PERMISSIONS.PURCHASE_DELETE),
+  param('id').isMongoId().withMessage('Invalid purchase ID'),
+  validate,
+  purchaseController.deletePurchase
+);
+
 module.exports = router;

@@ -2,8 +2,6 @@ import React, { useEffect, lazy, Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { useSelector, useDispatch } from 'react-redux';
 import { CircularProgress, Box } from '@mui/material';
-import { Analytics } from '@vercel/analytics/react';
-import { SpeedInsights } from '@vercel/speed-insights/react';
 import { getMe } from './store/slices/authSlice';
 
 // Layouts - Keep non-lazy for faster initial render
@@ -590,8 +588,6 @@ function App() {
       {/* 404 */}
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
-      <Analytics />
-      <SpeedInsights />
     </Suspense>
   );
 }

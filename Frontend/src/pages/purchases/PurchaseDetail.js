@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useSelector } from 'react-redux';
 import { Box, Card, CardContent, Grid, Typography, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Chip, Button, Divider, Tooltip, IconButton } from '@mui/material';
 import { Inventory, Cancel, Edit, Delete } from '@mui/icons-material';
 import purchaseService from '../../services/purchaseService';
@@ -11,6 +12,9 @@ import toast from 'react-hot-toast';
 const PurchaseDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useSelector(state => state.auth);
+  // KPO and Distributor can edit/delete any purchase at any status
+  const canEditDelete = user?.role === 'distributor' || user?.role === 'computer_operator';
   const [loading, setLoading] = useState(true);
   const [purchase, setPurchase] = useState(null);
   const [showReceive, setShowReceive] = useState(false);
@@ -57,14 +61,14 @@ const PurchaseDetail = () => {
     <Box>
       <PageHeader title={`Purchase: ${purchase.purchaseNumber}`} backUrl="/purchases" action={
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-          {!purchase.stockUpdated && (
+          {canEditDelete && (
             <Tooltip title="Edit Purchase">
               <IconButton color="primary" onClick={() => navigate(`/purchases/${id}/edit`)}>
                 <Edit />
               </IconButton>
             </Tooltip>
           )}
-          {!purchase.stockUpdated && (
+          {canEditDelete && (
             <Tooltip title="Delete Purchase">
               <IconButton color="error" onClick={() => setShowDelete(true)}>
                 <Delete />

@@ -159,4 +159,27 @@ router.post(
   orderController.generateInvoice
 );
 
+// Update invoice (edit quantities only - rates stay unchanged)
+router.put(
+  '/invoice/:id',
+  authenticate,
+  authorize(PERMISSIONS.INVOICE_UPDATE),
+  param('id').isMongoId().withMessage('Invalid invoice ID'),
+  body('items').isArray({ min: 1 }).withMessage('At least one item is required'),
+  body('items.*.product').isMongoId().withMessage('Valid product ID is required'),
+  body('items.*.quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
+  validate,
+  orderController.updateInvoice
+);
+
+// Delete order - KPO and Distributor only
+router.delete(
+  '/:id',
+  authenticate,
+  authorize(PERMISSIONS.ORDER_DELETE),
+  param('id').isMongoId().withMessage('Invalid order ID'),
+  validate,
+  orderController.deleteOrder
+);
+
 module.exports = router;

@@ -1,5 +1,7 @@
 const { Product } = require('../models/Product');
 const { InventoryTransaction, InventoryValuation } = require('../models/Inventory');
+const Purchase = require('../models/Purchase');
+const mongoose = require('mongoose');
 
 /**
  * Inventory Service
@@ -10,7 +12,103 @@ const { InventoryTransaction, InventoryValuation } = require('../models/Inventor
  * - Stock transactions logging
  */
 
+// 8% margin for sale price calculation
+const SALE_MARGIN_PERCENTAGE = 8;
+
 class InventoryService {
+
+  /**
+   * Calculate weighted average cost price from ALL purchases for a product
+   * Formula: (Sum of all purchasePrice * quantity) / (Sum of all quantities)
+   * 
+   * @param {String} productId - The product ID
+   * @param {Object} session - Optional mongoose session for transactions
+   * @returns {Object} { totalAmount, totalQuantity, costPrice, salePrice }
+   */
+  static async calculateWeightedAverageCost(productId, session = null) {
+    const queryOptions = session ? { session } : {};
+    
+    // Aggregate all purchase items for this product
+    const result = await Purchase.aggregate([
+      { $match: { status: { $ne: 'cancelled' } } },
+      { $unwind: '$items' },
+      { $match: { 'items.product': new mongoose.Types.ObjectId(productId) } },
+      {
+        $group: {
+          _id: '$items.product',
+          totalAmount: { 
+            $sum: { $multiply: ['$items.purchasePrice', '$items.quantity'] } 
+          },
+          totalQuantity: { $sum: '$items.quantity' }
+        }
+      }
+    ]);
+
+    if (!result.length || result[0].totalQuantity === 0) {
+      return { 
+        totalAmount: 0, 
+        totalQuantity: 0, 
+        costPrice: 0, 
+        salePrice: 0 
+      };
+    }
+
+    const { totalAmount, totalQuantity } = result[0];
+    
+    // Calculate cost price with 2 decimal precision
+    const costPrice = Math.round((totalAmount / totalQuantity) * 100) / 100;
+    
+    // Calculate sale price with 8% margin
+    const salePrice = Math.round(costPrice * (1 + SALE_MARGIN_PERCENTAGE / 100) * 100) / 100;
+
+    return { totalAmount, totalQuantity, costPrice, salePrice };
+  }
+
+  /**
+   * Update product pricing after purchase changes
+   * This should be called after every purchase create/edit/delete
+   * 
+   * @param {String} productId - The product ID
+   * @param {Object} session - Optional mongoose session for transactions
+   */
+  static async updateProductPricing(productId, session = null) {
+    const { costPrice, salePrice } = await this.calculateWeightedAverageCost(productId, session);
+    
+    const updateOptions = session ? { session } : {};
+    
+    await Product.findByIdAndUpdate(
+      productId,
+      { 
+        costPrice: costPrice,
+        salePrice: salePrice
+      },
+      updateOptions
+    );
+
+    // Also update the InventoryValuation averageCost to keep them in sync
+    await InventoryValuation.findOneAndUpdate(
+      { product: productId },
+      { averageCost: costPrice },
+      { ...updateOptions, upsert: false }
+    );
+
+    return { costPrice, salePrice };
+  }
+
+  /**
+   * Recalculate pricing for ALL products affected by a purchase
+   * @param {Array} productIds - Array of product IDs
+   * @param {Object} session - Optional mongoose session
+   */
+  static async recalculatePricingForProducts(productIds, session = null) {
+    const results = [];
+    for (const productId of productIds) {
+      const pricing = await this.updateProductPricing(productId, session);
+      results.push({ productId, ...pricing });
+    }
+    return results;
+  }
+
   /**
    * Add stock (from purchase)
    */
@@ -78,6 +176,7 @@ class InventoryService {
 
   /**
    * Remove stock (from sale)
+   * @param {boolean} skipStockCheck - If true, skips stock availability check (for adjustments/reversals)
    */
   static async removeStock({
     productId,
@@ -88,7 +187,8 @@ class InventoryService {
     userId,
     userName,
     transactionDate,
-    transactionType = 'sale'
+    transactionType = 'sale',
+    skipStockCheck = false
   }) {
     // Get product
     const product = await Product.findById(productId);
@@ -102,8 +202,8 @@ class InventoryService {
       throw new Error(`No inventory valuation found for product: ${product.name}`);
     }
 
-    // Check stock availability
-    if (valuation.currentStock < quantity) {
+    // Check stock availability (skip for adjustments/reversals)
+    if (!skipStockCheck && valuation.currentStock < quantity) {
       throw new Error(`Insufficient stock for ${product.name}. Available: ${valuation.currentStock}, Requested: ${quantity}`);
     }
 
@@ -220,16 +320,18 @@ class InventoryService {
 
     // Use product.currentStock as primary source, fallback to valuation
     const quantity = product.currentStock ?? valuation?.currentStock ?? 0;
-    const avgCost = valuation?.averageCost || product.costPrice || 0;
+    const avgCost = product.costPrice || valuation?.averageCost || 0;
 
-    // Calculate suggested sale price: average cost + 5% margin
-    const suggestedSalePrice = avgCost > 0 ? Math.ceil(avgCost * 1.05) : (product.suggestedRetailPrice || 0);
+    // Calculate suggested sale price: average cost + 8% margin
+    const suggestedSalePrice = product.salePrice || (avgCost > 0 ? Math.round(avgCost * 1.08 * 100) / 100 : (product.suggestedRetailPrice || 0));
 
     return {
       product,
       quantity,
       currentStock: quantity,
       averageCost: avgCost,
+      costPrice: avgCost,
+      salePrice: suggestedSalePrice,
       suggestedSalePrice: suggestedSalePrice,
       suggestedRetailPrice: product.suggestedRetailPrice || 0,
       suggestedPurchasePrice: product.suggestedPurchasePrice || 0,
