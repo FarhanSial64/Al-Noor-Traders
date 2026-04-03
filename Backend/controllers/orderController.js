@@ -540,7 +540,7 @@ exports.updateOrder = async (req, res) => {
         await AccountingService.updateSalesEntry({
           customerId: order.customer,
           customerName: order.customerName,
-          invoiceId: order.invoice || order._id,
+          invoiceId: order.invoiceId || order._id,
           invoiceNumber: order.orderNumber,
           oldAmount: originalGrandTotal,
           newAmount: order.grandTotal,
@@ -1577,6 +1577,9 @@ exports.deleteOrder = async (req, res) => {
     const orderNumber = order.orderNumber;
     const customerName = customer?.businessName || order.customerName || 'Unknown';
     const grandTotal = order.grandTotal;
+    const affectedProductIds = order.items.map(item => item.product?.toString() || item.product);
+
+    console.log(`[deleteOrder] Deleting order ${orderNumber} with ${order.items.length} items, affected products: ${affectedProductIds.length}`);
 
     // Calculate total COGS for reversal
     let totalCogs = 0;
@@ -1587,6 +1590,7 @@ exports.deleteOrder = async (req, res) => {
     // If stock was deducted (order was confirmed/dispatched/delivered), restore it
     if (['confirmed', 'dispatched', 'delivered'].includes(order.status)) {
       for (const item of order.items) {
+        console.log(`[deleteOrder] Restoring stock for product ${item.productSku}: qty=${item.quantity}`);
         await InventoryService.addStock({
           productId: item.product,
           quantity: item.quantity,
@@ -1602,8 +1606,8 @@ exports.deleteOrder = async (req, res) => {
     }
 
     // Delete related invoice if exists
-    if (order.invoiceGenerated && order.invoice) {
-      await Invoice.findByIdAndDelete(order.invoice).session(session);
+    if (order.invoiceGenerated && order.invoiceId) {
+      await Invoice.findByIdAndDelete(order.invoiceId).session(session);
     }
 
     // Reverse accounting entries
@@ -1623,19 +1627,32 @@ exports.deleteOrder = async (req, res) => {
 
     await session.commitTransaction();
 
+    // CRITICAL FIX: Sync stock from transactions for all affected products
+    try {
+      console.log(`[deleteOrder] Syncing stock for ${affectedProductIds.length} affected products`);
+      const uniqueProductIds = [...new Set(affectedProductIds)];
+      for (const productId of uniqueProductIds) {
+        if (productId) {
+          await InventoryService.syncProductStockFromTransactions(productId);
+        }
+      }
+    } catch (syncError) {
+      console.error('[deleteOrder] Stock sync error (non-fatal):', syncError);
+    }
+
     await logFinancialTransaction(req, {
       action: 'DELETE',
       module: 'order',
       entityType: 'Order',
       entityId: req.params.id,
       entityNumber: orderNumber,
-      description: `Order ${orderNumber} for ${customerName} deleted - stock restored & ledger reversed`,
+      description: `Order ${orderNumber} for ${customerName} deleted - stock restored & synced`,
       amount: grandTotal
     });
 
     res.json({
       success: true,
-      message: 'Order deleted successfully'
+      message: 'Order deleted & inventory synced successfully'
     });
   } catch (error) {
     await session.abortTransaction();

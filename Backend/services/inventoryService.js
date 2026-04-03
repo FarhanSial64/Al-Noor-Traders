@@ -306,9 +306,218 @@ class InventoryService {
   }
 
   /**
-   * Get product stock information
+   * CRITICAL FIX: Calculate stock dynamically from Purchase, Order, and Opening Balance transactions
+   * This ensures we always have the correct stock regardless of any stale Product.currentStock values
+   * 
+   * Formula: Stock = OpeningBalance + TotalPurchased - TotalSold
+   * 
+   * @param {String} productId - The product ID
+   * @returns {Object} { currentStock, purchased, sold, opening, source }
    */
-  static async getStockInfo(productId) {
+  static async calculateDynamicStock(productId) {
+    try {
+      const productObjectId = new mongoose.Types.ObjectId(productId);
+
+      // 1. Sum all purchases quantity (exclude cancelled)
+      const purchaseAgg = await Purchase.aggregate([
+        { $match: { status: { $ne: 'cancelled' } } },
+        { $unwind: '$items' },
+        { $match: { 'items.product': productObjectId } },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$items.quantity' }
+          }
+        }
+      ]);
+      const purchasedQuantity = purchaseAgg[0]?.total || 0;
+
+      // 2. Sum all orders quantity (exclude cancelled)
+      const Order = require('../models/Order');
+      const orderAgg = await Order.aggregate([
+        { $match: { status: { $ne: 'cancelled' } } },
+        { $unwind: '$items' },
+        { $match: { 'items.product': productObjectId } },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$items.quantity' }
+          }
+        }
+      ]);
+      const soldQuantity = orderAgg[0]?.total || 0;
+
+      // 3. Sum opening balance inventory transactions
+      const openingAgg = await InventoryTransaction.aggregate([
+        { $match: { product: productObjectId, transactionType: 'opening' } },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$quantityIn' }
+          }
+        }
+      ]);
+      const openingQuantity = openingAgg[0]?.total || 0;
+
+      // 4. Calculate final stock
+      const dynamicStock = openingQuantity + purchasedQuantity - soldQuantity;
+
+      console.log(`[calculateDynamicStock] Product ${productId}: Opening=${openingQuantity}, Purchased=${purchasedQuantity}, Sold=${soldQuantity}, Stock=${dynamicStock}`);
+
+      return {
+        currentStock: dynamicStock,
+        purchased: purchasedQuantity,
+        sold: soldQuantity,
+        opening: openingQuantity,
+        source: 'dynamic_calculation'
+      };
+    } catch (error) {
+      console.error(`[calculateDynamicStock] Error calculating stock for ${productId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Recalculate stock for all products from actual Purchase/Order collections
+   * Use this endpoint after bulk deletes to ensure consistency
+   * 
+   * @returns {Object} Summary of recalculation results
+   */
+  static async recalculateAllStockFromTransactions() {
+    try {
+      console.log('[recalculateAllStockFromTransactions] Starting full inventory recalculation...');
+      
+      const products = await Product.find({ isActive: true }).select('_id name sku');
+      const results = {
+        processed: 0,
+        corrected: 0,
+        errors: 0,
+        products: []
+      };
+
+      for (const product of products) {
+        try {
+          // Get dynamic stock
+          const { currentStock, purchased, sold, opening } = await this.calculateDynamicStock(product._id);
+          
+          // Get stored stock
+          const storedProduct = await Product.findById(product._id);
+          const storedStock = storedProduct.currentStock || 0;
+          
+          // Check if correction needed
+          const needsCorrection = currentStock !== storedStock;
+          
+          if (needsCorrection) {
+            // Update Product.currentStock
+            await Product.findByIdAndUpdate(product._id, { currentStock });
+            
+            // Update InventoryValuation if exists
+            const valuation = await InventoryValuation.findOne({ product: product._id });
+            if (valuation) {
+              valuation.currentStock = currentStock;
+              await valuation.save();
+            }
+            
+            results.corrected++;
+            console.log(`[recalculate] Corrected ${product.sku}: ${storedStock} → ${currentStock}`);
+          }
+          
+          results.processed++;
+          results.products.push({
+            productId: product._id,
+            sku: product.sku,
+            name: product.name,
+            storedStock,
+            dynamicStock: currentStock,
+            corrected: needsCorrection,
+            breakdown: { opening, purchased, sold }
+          });
+        } catch (productError) {
+          results.errors++;
+          console.error(`[recalculate] Error processing product ${product.sku}:`, productError);
+        }
+      }
+
+      console.log(`[recalculateAllStockFromTransactions] Completed: ${results.processed} processed, ${results.corrected} corrected, ${results.errors} errors`);
+      return results;
+    } catch (error) {
+      console.error('[recalculateAllStockFromTransactions] Error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get product stock information - uses DYNAMIC calculation with fallback to stored value
+   */
+  static async getStockInfoDynamic(productId) {
+    const product = await Product.findById(productId)
+      .populate('category brand');
+    
+    if (!product) {
+      throw new Error('Product not found');
+    }
+
+    // Calculate dynamic stock from actual transactions
+    let { currentStock, purchased, sold, opening } = await this.calculateDynamicStock(productId);
+    
+    // Get pricing info
+    const avgCost = product.costPrice || 0;
+    const suggestedSalePrice = product.salePrice || (avgCost > 0 ? Math.round(avgCost * 1.08 * 100) / 100 : (product.suggestedRetailPrice || 0));
+
+    // Build response
+    const stockInfo = {
+      product,
+      quantity: currentStock,
+      currentStock: currentStock,
+      averageCost: avgCost,
+      costPrice: avgCost,
+      salePrice: suggestedSalePrice,
+      suggestedSalePrice: suggestedSalePrice,
+      suggestedRetailPrice: product.suggestedRetailPrice || 0,
+      suggestedPurchasePrice: product.suggestedPurchasePrice || 0,
+      totalValue: currentStock * avgCost,
+      isLowStock: currentStock <= (product.minimumStock || 0),
+      // Add breakdown
+      stockBreakdown: {
+        opening,
+        purchased,
+        sold,
+        calculated: currentStock,
+        formula: `${opening} + ${purchased} - ${sold} = ${currentStock}`
+      }
+    };
+
+    return stockInfo;
+  }
+
+  /**
+   * Update stock value based on dynamic calculation
+   * Call this to sync Product.currentStock with actual transactions
+   */
+  static async syncProductStockFromTransactions(productId) {
+    try {
+      const { currentStock } = await this.calculateDynamicStock(productId);
+      
+      // Update product
+      await Product.findByIdAndUpdate(productId, { currentStock });
+      
+      // Update valuation if exists
+      const valuation = await InventoryValuation.findOne({ product: productId });
+      if (valuation) {
+        valuation.currentStock = currentStock;
+        await valuation.save();
+      }
+      
+      console.log(`[syncProductStockFromTransactions] Synced product ${productId} to stock=${currentStock}`);
+      
+      return { productId, currentStock };
+    } catch (error) {
+      console.error(`[syncProductStockFromTransactions] Error syncing product ${productId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
     const product = await Product.findById(productId)
       .populate('category brand');
     

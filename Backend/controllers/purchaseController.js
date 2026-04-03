@@ -683,9 +683,12 @@ exports.deletePurchase = async (req, res) => {
     // Collect affected product IDs
     const affectedProductIds = purchase.items.map(item => item.product.toString());
 
+    console.log(`[deletePurchase] Deleting purchase ${purchase.purchaseNumber} with ${purchase.items.length} items, affected products: ${affectedProductIds.length}`);
+
     // If stock was updated, reverse it
     if (purchase.stockUpdated) {
       for (const item of purchase.items) {
+        console.log(`[deletePurchase] Reversing stock for product ${item.productSku}: qty=${item.quantity}`);
         // For KPO/Distributor deletions, allow stock to go negative if necessary
         // This is an administrative action and stock adjustments will be handled
         await InventoryService.removeStock({
@@ -729,9 +732,20 @@ exports.deletePurchase = async (req, res) => {
 
     // CRITICAL: Recalculate pricing AFTER transaction commits to avoid write conflicts
     try {
+      console.log(`[deletePurchase] Recalculating pricing for ${uniqueProductIds.length} products`);
       await InventoryService.recalculatePricingForProducts(uniqueProductIds);
     } catch (pricingError) {
       console.error('Pricing recalculation error (non-fatal):', pricingError);
+    }
+
+    // CRITICAL FIX: Sync stock from transactions for all affected products
+    try {
+      console.log(`[deletePurchase] Syncing stock for ${uniqueProductIds.length} affected products`);
+      for (const productId of uniqueProductIds) {
+        await InventoryService.syncProductStockFromTransactions(productId);
+      }
+    } catch (syncError) {
+      console.error('[deletePurchase] Stock sync error (non-fatal):', syncError);
     }
 
     await logFinancialTransaction(req, {
@@ -740,14 +754,15 @@ exports.deletePurchase = async (req, res) => {
       entityType: 'Purchase',
       entityId: req.params.id,
       entityNumber: purchaseNumber,
-      description: `Purchase ${purchaseNumber} from ${vendorName} deleted - stock reversed & pricing recalculated`,
+      description: `Purchase ${purchaseNumber} from ${vendorName} deleted - stock reversed, pricing & stock synced`,
       amount: grandTotal
     });
 
     res.json({
       success: true,
-      message: 'Purchase deleted & pricing recalculated successfully'
+      message: 'Purchase deleted & inventory synced successfully'
     });
+
   } catch (error) {
     if (session.inTransaction()) {
       await session.abortTransaction();

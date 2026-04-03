@@ -70,7 +70,7 @@ exports.getDashboardStats = async (req, res) => {
       // Full dashboard for distributor and KPO
       const [
         todayOrders,
-        todayInvoices,
+        todaySales,
         todayPurchases,
         todayReceipts,
         pendingOrders,
@@ -81,8 +81,8 @@ exports.getDashboardStats = async (req, res) => {
         payablesTotal
       ] = await Promise.all([
         Order.countDocuments({ createdAt: { $gte: startDate, $lte: endDate } }),
-        Invoice.aggregate([
-          { $match: { invoiceDate: { $gte: startDate, $lte: endDate } } },
+        Order.aggregate([
+          { $match: { orderDate: { $gte: startDate, $lte: endDate }, status: { $ne: 'cancelled' } } },
           { $group: { _id: null, total: { $sum: '$grandTotal' }, count: { $sum: 1 } } }
         ]),
         Purchase.aggregate([
@@ -119,8 +119,8 @@ exports.getDashboardStats = async (req, res) => {
           pending: pendingOrders
         },
         sales: {
-          count: todayInvoices[0]?.count || 0,
-          total: todayInvoices[0]?.total || 0
+          count: todaySales[0]?.count || 0,
+          total: todaySales[0]?.total || 0
         },
         purchases: {
           count: todayPurchases[0]?.count || 0,
@@ -154,11 +154,12 @@ exports.getDashboardStats = async (req, res) => {
         })
       ]);
 
-      const salesAmount = await Invoice.aggregate([
+      const salesAmount = await Order.aggregate([
         { 
           $match: { 
-            orderBooker: orderBookerUserId,
-            invoiceDate: { $gte: startDate, $lte: endDate }
+            bookedBy: orderBookerUserId,
+            orderDate: { $gte: startDate, $lte: endDate },
+            status: { $ne: 'cancelled' }
           } 
         },
         { $group: { _id: null, total: { $sum: '$grandTotal' } } }
@@ -218,6 +219,11 @@ exports.getSalesSummary = async (req, res) => {
     const { period = 'week', groupBy = 'day' } = req.query;
     const { startDate, endDate } = getDateRange(period);
 
+    // Debug: Check total orders in database
+    const totalOrders = await Order.countDocuments({});
+    const activeOrders = await Order.countDocuments({ status: { $ne: 'cancelled' } });
+    console.log(`[getSalesSummary] Total orders in DB: ${totalOrders}, Active: ${activeOrders}`);
+
     let dateFormat;
     switch (groupBy) {
       case 'day':
@@ -233,28 +239,30 @@ exports.getSalesSummary = async (req, res) => {
         dateFormat = '%Y-%m-%d';
     }
 
-    const salesData = await Invoice.aggregate([
+    const salesData = await Order.aggregate([
       {
         $match: {
-          invoiceDate: { $gte: startDate, $lte: endDate }
+          orderDate: { $gte: startDate, $lte: endDate },
+          status: { $ne: 'cancelled' }
         }
       },
       {
         $group: {
-          _id: { $dateToString: { format: dateFormat, date: '$invoiceDate' } },
+          _id: { $dateToString: { format: dateFormat, date: '$orderDate' } },
           totalSales: { $sum: '$grandTotal' },
           totalCost: { $sum: '$totalCost' },
-          totalProfit: { $sum: '$totalProfit' },
+          totalProfit: { $sum: { $ifNull: ['$totalProfit', 0] } },
           count: { $sum: 1 }
         }
       },
       { $sort: { _id: 1 } }
     ]);
 
-    const summary = await Invoice.aggregate([
+    const summary = await Order.aggregate([
       {
         $match: {
-          invoiceDate: { $gte: startDate, $lte: endDate }
+          orderDate: { $gte: startDate, $lte: endDate },
+          status: { $ne: 'cancelled' }
         }
       },
       {
@@ -262,7 +270,7 @@ exports.getSalesSummary = async (req, res) => {
           _id: null,
           totalSales: { $sum: '$grandTotal' },
           totalCost: { $sum: '$totalCost' },
-          totalProfit: { $sum: '$totalProfit' },
+          totalProfit: { $sum: { $ifNull: ['$totalProfit', 0] } },
           avgOrderValue: { $avg: '$grandTotal' },
           count: { $sum: 1 }
         }
@@ -382,10 +390,13 @@ exports.getTopProducts = async (req, res) => {
     const { period = 'month', limit = 10 } = req.query;
     const { startDate, endDate } = getDateRange(period);
 
-    const topProducts = await Invoice.aggregate([
+    console.log(`[getTopProducts] Date range: ${startDate} to ${endDate}`);
+
+    const topProducts = await Order.aggregate([
       {
         $match: {
-          invoiceDate: { $gte: startDate, $lte: endDate }
+          orderDate: { $gte: startDate, $lte: endDate },
+          status: { $ne: 'cancelled' }
         }
       },
       { $unwind: '$items' },
@@ -395,12 +406,14 @@ exports.getTopProducts = async (req, res) => {
           productName: { $first: '$items.productName' },
           totalQuantity: { $sum: '$items.quantity' },
           totalSales: { $sum: { $multiply: ['$items.quantity', '$items.salePrice'] } },
-          totalProfit: { $sum: '$items.profit' }
+          totalProfit: { $sum: { $ifNull: ['$items.lineProfit', 0] } }
         }
       },
       { $sort: { totalSales: -1 } },
       { $limit: parseInt(limit) }
     ]);
+
+    console.log(`[getTopProducts] Found ${topProducts.length} products`);
 
     res.json({
       success: true,
@@ -583,41 +596,27 @@ exports.getOrderBookerStats = async (req, res) => {
     }
 
     if (targetUserId) {
-      // Single order booker stats
-      const [orderStats, invoiceStats] = await Promise.all([
-        Order.aggregate([
-          {
-            $match: {
-              bookedBy: targetUserId,
-              createdAt: { $gte: startDate, $lte: endDate }
-            }
-          },
-          {
-            $group: {
-              _id: null,
-              totalOrders: { $sum: 1 },
-              totalValue: { $sum: '$grandTotal' },
-              avgOrderValue: { $avg: '$grandTotal' }
-            }
+      // Single order booker stats - use only Order collection
+      const orderStats = await Order.aggregate([
+        {
+          $match: {
+            bookedBy: targetUserId,
+            orderDate: { $gte: startDate, $lte: endDate },
+            status: { $ne: 'cancelled' }
           }
-        ]),
-        Invoice.aggregate([
-          {
-            $match: {
-              orderBooker: targetUserId,
-              invoiceDate: { $gte: startDate, $lte: endDate }
-            }
-          },
-          {
-            $group: {
-              _id: null,
-              totalSales: { $sum: '$grandTotal' },
-              totalProfit: { $sum: '$totalProfit' },
-              invoiceCount: { $sum: 1 }
-            }
+        },
+        {
+          $group: {
+            _id: null,
+            totalOrders: { $sum: 1 },
+            totalValue: { $sum: '$grandTotal' },
+            totalProfit: { $sum: { $ifNull: ['$totalProfit', 0] } },
+            avgOrderValue: { $avg: '$grandTotal' }
           }
-        ])
+        }
       ]);
+
+      console.log(`[getOrderBookerStats] Single booker ${targetUserId}: ${orderStats[0]?.totalOrders || 0} orders`);
 
       const user = await User.findById(targetUserId).select('fullName assignedArea');
 
@@ -626,8 +625,7 @@ exports.getOrderBookerStats = async (req, res) => {
         data: {
           orderBooker: user,
           period,
-          orders: orderStats[0] || { totalOrders: 0, totalValue: 0, avgOrderValue: 0 },
-          sales: invoiceStats[0] || { totalSales: 0, totalProfit: 0, invoiceCount: 0 }
+          stats: orderStats[0] || { totalOrders: 0, totalValue: 0, totalProfit: 0, avgOrderValue: 0 }
         }
       });
     } else {
@@ -635,14 +633,16 @@ exports.getOrderBookerStats = async (req, res) => {
       const stats = await Order.aggregate([
         {
           $match: {
-            createdAt: { $gte: startDate, $lte: endDate }
+            orderDate: { $gte: startDate, $lte: endDate },
+            status: { $ne: 'cancelled' }
           }
         },
         {
           $group: {
             _id: '$bookedBy',
             totalOrders: { $sum: 1 },
-            totalValue: { $sum: '$grandTotal' }
+            totalValue: { $sum: '$grandTotal' },
+            totalProfit: { $sum: { $ifNull: ['$totalProfit', 0] } }
           }
         },
         {
@@ -660,11 +660,14 @@ exports.getOrderBookerStats = async (req, res) => {
             fullName: '$user.fullName',
             assignedArea: '$user.assignedArea',
             totalOrders: 1,
-            totalValue: 1
+            totalValue: 1,
+            totalProfit: 1
           }
         },
         { $sort: { totalValue: -1 } }
       ]);
+
+      console.log(`[getOrderBookerStats] All bookers: ${stats.length} bookers, total orders: ${stats.reduce((sum, s) => sum + s.totalOrders, 0)}`);
 
       res.json({
         success: true,
@@ -922,18 +925,27 @@ exports.getSalesTrend = async (req, res) => {
     startDate.setDate(startDate.getDate() - parseInt(days));
     startDate.setHours(0, 0, 0, 0);
 
-    const salesTrend = await Invoice.aggregate([
-      { $match: { invoiceDate: { $gte: startDate } } },
+    console.log(`[getSalesTrend] Fetching ${days} days of sales trend from Orders`);
+
+    const salesTrend = await Order.aggregate([
+      { 
+        $match: { 
+          orderDate: { $gte: startDate },
+          status: { $ne: 'cancelled' }
+        } 
+      },
       {
         $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$invoiceDate' } },
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$orderDate' } },
           sales: { $sum: '$grandTotal' },
-          profit: { $sum: '$totalProfit' },
+          profit: { $sum: { $ifNull: ['$totalProfit', 0] } },
           count: { $sum: 1 }
         }
       },
       { $sort: { _id: 1 } }
     ]);
+
+    console.log(`[getSalesTrend] Found ${salesTrend.length} days of data`);
 
     const receiptsTrend = await Payment.aggregate([
       { $match: { paymentType: 'receipt', paymentDate: { $gte: startDate }, status: 'completed' } },
@@ -1049,33 +1061,16 @@ exports.getOrderBookers = async (req, res) => {
 // @access  Distributor, Computer Operator
 exports.getInvoiceOrderBookers = async (req, res) => {
   try {
-    // Get unique order bookers from invoices - lookup from Order if not set on Invoice
-    const orderBookers = await Invoice.aggregate([
-      {
-        $lookup: {
-          from: 'orders',
-          localField: 'order',
-          foreignField: '_id',
-          as: 'orderData'
-        }
-      },
-      {
-        $addFields: {
-          resolvedOrderBooker: {
-            $ifNull: ['$orderBooker', { $ifNull: [{ $arrayElemAt: ['$orderData.bookedBy', 0] }, '$createdBy'] }]
-          },
-          resolvedOrderBookerName: {
-            $ifNull: ['$orderBookerName', { $ifNull: [{ $arrayElemAt: ['$orderData.bookedByName', 0] }, '$createdByName'] }]
-          }
-        }
-      },
+    // Get unique order bookers from orders so deleted orders do not keep stale sales filters
+    const orderBookers = await Order.aggregate([
+      { $match: { status: { $ne: 'cancelled' } } },
       {
         $group: {
-          _id: '$resolvedOrderBooker',
-          name: { $first: '$resolvedOrderBookerName' }
+          _id: '$bookedBy',
+          name: { $first: '$bookedByName' }
         }
       },
-      { $match: { name: { $ne: null } } },
+      { $match: { _id: { $ne: null }, name: { $ne: null } } },
       { $sort: { name: 1 } },
       { $project: { _id: 1, fullName: '$name' } }
     ]);
@@ -1110,9 +1105,9 @@ exports.getSalesReport = async (req, res) => {
       dateFilter = { $gte: start, $lte: end };
     }
 
-    const matchQuery = { invoiceDate: dateFilter };
+    const matchQuery = { orderDate: dateFilter, status: { $ne: 'cancelled' } };
     if (orderBooker) {
-      matchQuery.orderBooker = new mongoose.Types.ObjectId(orderBooker);
+      matchQuery.bookedBy = new mongoose.Types.ObjectId(orderBooker);
     }
 
     let dateFormat;
@@ -1123,14 +1118,14 @@ exports.getSalesReport = async (req, res) => {
     }
 
     // Get chart data grouped by date
-    const chartData = await Invoice.aggregate([
+    const chartData = await Order.aggregate([
       { $match: matchQuery },
       {
         $group: {
-          _id: { $dateToString: { format: dateFormat, date: '$invoiceDate' } },
+          _id: { $dateToString: { format: dateFormat, date: '$orderDate' } },
           totalSales: { $sum: '$grandTotal' },
           totalCost: { $sum: { $ifNull: ['$totalCost', 0] } },
-          totalProfit: { $sum: { $ifNull: ['$grossProfit', 0] } },
+          totalProfit: { $sum: { $ifNull: ['$totalProfit', 0] } },
           count: { $sum: 1 }
         }
       },
@@ -1138,14 +1133,14 @@ exports.getSalesReport = async (req, res) => {
     ]);
 
     // Get summary
-    const summary = await Invoice.aggregate([
+    const summary = await Order.aggregate([
       { $match: matchQuery },
       {
         $group: {
           _id: null,
           totalSales: { $sum: '$grandTotal' },
           totalCost: { $sum: { $ifNull: ['$totalCost', 0] } },
-          totalProfit: { $sum: { $ifNull: ['$grossProfit', 0] } },
+          totalProfit: { $sum: { $ifNull: ['$totalProfit', 0] } },
           avgOrderValue: { $avg: '$grandTotal' },
           count: { $sum: 1 }
         }
@@ -1155,33 +1150,15 @@ exports.getSalesReport = async (req, res) => {
     // Get order booker wise breakdown (only if not filtered by specific order booker)
     let orderBookerWise = [];
     if (!orderBooker) {
-      orderBookerWise = await Invoice.aggregate([
+      orderBookerWise = await Order.aggregate([
         { $match: matchQuery },
         {
-          $lookup: {
-            from: 'orders',
-            localField: 'order',
-            foreignField: '_id',
-            as: 'orderData'
-          }
-        },
-        {
-          $addFields: {
-            resolvedOrderBooker: {
-              $ifNull: ['$orderBooker', { $ifNull: [{ $arrayElemAt: ['$orderData.bookedBy', 0] }, '$createdBy'] }]
-            },
-            resolvedOrderBookerName: {
-              $ifNull: ['$orderBookerName', { $ifNull: [{ $arrayElemAt: ['$orderData.bookedByName', 0] }, '$createdByName'] }]
-            }
-          }
-        },
-        {
           $group: {
-            _id: '$resolvedOrderBooker',
-            orderBookerName: { $first: '$resolvedOrderBookerName' },
+            _id: '$bookedBy',
+            orderBookerName: { $first: '$bookedByName' },
             totalSales: { $sum: '$grandTotal' },
             totalCost: { $sum: { $ifNull: ['$totalCost', 0] } },
-            totalProfit: { $sum: { $ifNull: ['$grossProfit', 0] } },
+            totalProfit: { $sum: { $ifNull: ['$totalProfit', 0] } },
             count: { $sum: 1 }
           }
         },
@@ -1189,35 +1166,21 @@ exports.getSalesReport = async (req, res) => {
       ]);
     }
 
-    // Get detailed invoices with order booker lookup from Order if not set on invoice
-    const invoices = await Invoice.aggregate([
+    // Get detailed sales rows from orders
+    const invoices = await Order.aggregate([
       { $match: matchQuery },
-      { $sort: { invoiceDate: -1 } },
+      { $sort: { orderDate: -1 } },
       { $limit: 500 },
       {
-        $lookup: {
-          from: 'orders',
-          localField: 'order',
-          foreignField: '_id',
-          as: 'orderData'
-        }
-      },
-      {
         $project: {
-          invoiceNumber: 1,
-          invoiceDate: 1,
+          invoiceNumber: '$orderNumber',
+          invoiceDate: '$orderDate',
           customerName: 1,
           grandTotal: 1,
           totalCost: { $ifNull: ['$totalCost', 0] },
-          totalProfit: { $ifNull: ['$grossProfit', 0] },
+          totalProfit: { $ifNull: ['$totalProfit', 0] },
           status: 1,
-          // Use orderBookerName if set, otherwise get from linked order, finally fallback to createdByName
-          orderBookerName: {
-            $ifNull: [
-              '$orderBookerName',
-              { $ifNull: [{ $arrayElemAt: ['$orderData.bookedByName', 0] }, '$createdByName'] }
-            ]
-          }
+          orderBookerName: '$bookedByName'
         }
       }
     ]);
@@ -1369,10 +1332,10 @@ exports.getSaleSummary = async (req, res) => {
       dateFilter = { $gte: start, $lte: end };
     }
 
-    const matchQuery = { invoiceDate: dateFilter };
+    const matchQuery = { orderDate: dateFilter, status: { $ne: 'cancelled' } };
 
     // Get product-wise aggregation
-    const products = await Invoice.aggregate([
+    const products = await Order.aggregate([
       { $match: matchQuery },
       { $unwind: '$items' },
       {
@@ -1384,7 +1347,7 @@ exports.getSaleSummary = async (req, res) => {
           totalSalesValue: { $sum: '$items.lineTotal' },
           totalSales: { $sum: '$items.lineTotal' },
           totalCost: { $sum: { $multiply: ['$items.quantity', '$items.costPrice'] } },
-          totalProfit: { $sum: '$items.profit' },
+          totalProfit: { $sum: '$items.lineProfit' },
           invoiceCount: { $addToSet: '$_id' }
         }
       },
@@ -1416,7 +1379,7 @@ exports.getSaleSummary = async (req, res) => {
     ]);
 
     // Get overall summary
-    const summary = await Invoice.aggregate([
+    const summary = await Order.aggregate([
       { $match: matchQuery },
       { $unwind: '$items' },
       {
@@ -1425,7 +1388,7 @@ exports.getSaleSummary = async (req, res) => {
           totalQuantity: { $sum: '$items.quantity' },
           totalSales: { $sum: '$items.lineTotal' },
           totalCost: { $sum: { $multiply: ['$items.quantity', '$items.costPrice'] } },
-          totalProfit: { $sum: '$items.profit' },
+          totalProfit: { $sum: '$items.lineProfit' },
           productCount: { $addToSet: '$items.product' }
         }
       },

@@ -107,4 +107,24 @@ router.get(
   inventoryController.getProductValuation
 );
 
-module.exports = router;
+// ========== CRITICAL FIX ENDPOINTS ==========
+
+// Recalculate all inventory from Purchase/Order transactions
+// Use this after bulk deletes to correct stale inventory values
+router.post(
+  '/recalculate-all',
+  authenticate,
+  authorize(PERMISSIONS.INVENTORY_WRITE),
+  inventoryController.recalculateAllInventory
+);
+
+// Sync specific product stock from transactions
+router.post(
+  '/sync-stock/:productId',
+  authenticate,
+  authorize(PERMISSIONS.INVENTORY_WRITE),
+  param('productId').isMongoId().withMessage('Invalid product ID'),
+  validate,
+  inventoryController.syncProductStock
+);
+

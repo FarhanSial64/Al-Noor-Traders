@@ -23,6 +23,10 @@ exports.getStock = async (req, res) => {
       limit = 50
     } = req.query;
 
+    // DEBUG: Log start
+    const totalProducts = await Product.countDocuments({ isActive: true });
+    console.log(`[getStock] Starting inventory check for ${totalProducts} products`);
+
     const query = { isActive: true };
 
     if (category) query.category = category;
@@ -44,26 +48,45 @@ exports.getStock = async (req, res) => {
       .select('sku name barcode currentStock minimumStock category brand piecesPerCarton')
       .lean();
 
+    // CRITICAL: Recalculate stock dynamically for each product
+    const enrichedProducts = [];
+    for (const product of products) {
+      try {
+        const { currentStock } = await InventoryService.calculateDynamicStock(product._id);
+        enrichedProducts.push({
+          ...product,
+          currentStock: currentStock, // Use DYNAMIC calculation, not stored value
+          isDynamic: true
+        });
+      } catch (calcError) {
+        console.warn(`[getStock] Error calculating stock for ${product.sku}, using stored value:`, calcError.message);
+        enrichedProducts.push(product); // Fallback to stored value
+      }
+    }
+
     if (lowStockOnly === 'true') {
-      products = products.filter(p => (p.currentStock || 0) <= (p.minimumStock || 0));
+      enrichedProducts.filter(p => (p.currentStock || 0) <= (p.minimumStock || 0));
     }
 
     // Pagination
-    const total = products.length;
+    const total = enrichedProducts.length;
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    const paginatedProducts = products.slice(skip, skip + parseInt(limit));
+    const paginatedProducts = enrichedProducts.slice(skip, skip + parseInt(limit));
 
     // Calculate totals
-    const totalItems = products.reduce((sum, p) => sum + (p.currentStock || 0), 0);
+    const totalItems = enrichedProducts.reduce((sum, p) => sum + (p.currentStock || 0), 0);
+
+    console.log(`[getStock] Total items across all products: ${totalItems} (using DYNAMIC calculation)`);
 
     res.json({
       success: true,
       data: paginatedProducts,
       summary: {
-        totalProducts: products.length,
+        totalProducts: enrichedProducts.length,
         totalItems,
-        lowStockCount: products.filter(p => (p.currentStock || 0) <= (p.minimumStock || 0)).length,
-        outOfStockCount: products.filter(p => (p.currentStock || 0) === 0).length
+        lowStockCount: enrichedProducts.filter(p => (p.currentStock || 0) <= (p.minimumStock || 0)).length,
+        outOfStockCount: enrichedProducts.filter(p => (p.currentStock || 0) === 0).length,
+        calculationMethod: 'DYNAMIC_FROM_PURCHASES_ORDERS'
       },
       pagination: {
         page: parseInt(page),
@@ -86,7 +109,10 @@ exports.getStock = async (req, res) => {
 // @access  Private
 exports.getProductStock = async (req, res) => {
   try {
-    const stockInfo = await InventoryService.getStockInfo(req.params.productId);
+    console.log(`[getProductStock] Fetching stock for product ${req.params.productId}`);
+    
+    // Use DYNAMIC calculation instead of stored value
+    const stockInfo = await InventoryService.getStockInfoDynamic(req.params.productId);
 
     if (!stockInfo) {
       return res.status(404).json({
@@ -94,6 +120,8 @@ exports.getProductStock = async (req, res) => {
         message: 'Product not found'
       });
     }
+
+    console.log(`[getProductStock] Calculated stock: ${stockInfo.currentStock} (breakdown: O=${stockInfo.stockBreakdown.opening}, P=${stockInfo.stockBreakdown.purchased}, S=${stockInfo.stockBreakdown.sold})`);
 
     res.json({
       success: true,
@@ -519,6 +547,85 @@ exports.getProductPricingReport = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Server error fetching pricing report'
+    });
+  }
+};
+// @desc    CRITICAL FIX: Recalculate all inventory from actual Purchase/Order transactions
+// @route   POST /api/inventory/recalculate-all
+// @access  Private (Distributor, Computer Operator only)
+// @purpose After deleting purchases/orders, run this to correct any stale inventory values
+exports.recalculateAllInventory = async (req, res) => {
+  try {
+    // Verify only authorized users
+    const allowedRoles = ['distributor', 'computer_operator'];
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only Distributor and Computer Operator can recalculate inventory'
+      });
+    }
+
+    console.log(`[recalculateAllInventory] Starting full inventory recalculation by ${req.user.fullName} (${req.user.role})`);
+
+    // Recalculate all stock
+    const results = await InventoryService.recalculateAllStockFromTransactions();
+
+    // Log the action
+    await createAuditLog({
+      action: 'INVENTORY_RECALCULATE_ALL',
+      module: 'inventory',
+      entityType: 'Inventory',
+      entityId: 'all-products',
+      description: `Full inventory recalculation - Processed: ${results.processed}, Corrected: ${results.corrected}, Errors: ${results.errors}`,
+      performedBy: req.user._id,
+      performedByName: req.user.fullName,
+      performedByRole: req.user.role,
+      ipAddress: req.ip
+    });
+
+    res.json({
+      success: true,
+      message: `Inventory recalculation complete: ${results.corrected}/${results.processed} products corrected`,
+      data: {
+        summary: {
+          processed: results.processed,
+          corrected: results.corrected,
+          errors: results.errors,
+          timestamp: new Date()
+        },
+        details: results.products.filter(p => p.corrected).slice(0, 50) // Show first 50 corrected items
+      }
+    });
+  } catch (error) {
+    console.error('Recalculate inventory error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error recalculating inventory'
+    });
+  }
+};
+
+// @desc    sync a specific product's stock from transactions
+// @route   POST /api/inventory/sync-stock/:productId
+// @access  Private
+exports.syncProductStock = async (req, res) => {
+  try {
+    const productId = req.params.productId;
+    
+    console.log(`[syncProductStock] Syncing stock for product ${productId}`);
+
+    const result = await InventoryService.syncProductStockFromTransactions(productId);
+
+    res.json({
+      success: true,
+      message: 'Product stock synchronized',
+      data: result
+    });
+  } catch (error) {
+    console.error('Sync product stock error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error syncing product stock'
     });
   }
 };
