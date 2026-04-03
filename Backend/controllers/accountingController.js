@@ -448,24 +448,18 @@ exports.getBalanceSheet = async (req, res) => {
 // @access  Private
 exports.getReceivables = async (req, res) => {
   try {
-    const customers = await Customer.find({
-      currentBalance: { $gt: 0 },
-      isActive: true
-    })
-    .select('customerCode businessName contactPerson phone currentBalance creditLimit creditDays')
-    .sort({ currentBalance: -1 });
+    const data = await AccountingService.getReceivablesByCustomer();
 
-    const totalReceivables = customers.reduce((sum, c) => sum + c.currentBalance, 0);
+    console.log(`[getReceivables] totalReceivables=${data.summary.totalReceivables} customerCount=${data.summary.customerCount}`);
+
+    const orderCount = await require('../models/Order').countDocuments({ status: { $ne: 'cancelled' } });
+    if (orderCount === 0 && data.summary.totalReceivables !== 0) {
+      console.warn(`[getReceivables] Validation warning: no active orders but receivables=${data.summary.totalReceivables}`);
+    }
 
     res.json({
       success: true,
-      data: {
-        customers,
-        summary: {
-          totalReceivables,
-          customerCount: customers.length
-        }
-      }
+      data
     });
   } catch (error) {
     console.error('Get receivables error:', error);
@@ -481,24 +475,18 @@ exports.getReceivables = async (req, res) => {
 // @access  Private
 exports.getPayables = async (req, res) => {
   try {
-    const vendors = await Vendor.find({
-      currentBalance: { $gt: 0 },
-      isActive: true
-    })
-    .select('vendorCode businessName contactPerson phone currentBalance paymentTerms creditDays')
-    .sort({ currentBalance: -1 });
+    const data = await AccountingService.getPayablesByVendor();
 
-    const totalPayables = vendors.reduce((sum, v) => sum + v.currentBalance, 0);
+    console.log(`[getPayables] totalPayables=${data.summary.totalPayables} vendorCount=${data.summary.vendorCount}`);
+
+    const purchaseCount = await require('../models/Purchase').countDocuments({ status: { $ne: 'cancelled' } });
+    if (purchaseCount === 0 && data.summary.totalPayables !== 0) {
+      console.warn(`[getPayables] Validation warning: no active purchases but payables=${data.summary.totalPayables}`);
+    }
 
     res.json({
       success: true,
-      data: {
-        vendors,
-        summary: {
-          totalPayables,
-          vendorCount: vendors.length
-        }
-      }
+      data
     });
   } catch (error) {
     console.error('Get payables error:', error);

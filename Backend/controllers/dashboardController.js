@@ -9,6 +9,7 @@ const { Product } = require('../models/Product');
 const User = require('../models/User');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const InventoryService = require('../services/inventoryService');
+const AccountingService = require('../services/accountingService');
 const { ROLES } = require('../config/roles');
 
 /**
@@ -76,9 +77,7 @@ exports.getDashboardStats = async (req, res) => {
         pendingOrders,
         lowStockProducts,
         totalCustomers,
-        totalVendors,
-        receivablesTotal,
-        payablesTotal
+        totalVendors
       ] = await Promise.all([
         Order.countDocuments({ createdAt: { $gte: startDate, $lte: endDate } }),
         Order.aggregate([
@@ -101,16 +100,22 @@ exports.getDashboardStats = async (req, res) => {
         Order.countDocuments({ status: { $in: ['pending', 'confirmed'] } }),
         InventoryService.getLowStockProducts(),
         Customer.countDocuments({ isActive: true }),
-        Vendor.countDocuments({ isActive: true }),
-        Customer.aggregate([
-          { $match: { isActive: true, currentBalance: { $gt: 0 } } },
-          { $group: { _id: null, total: { $sum: '$currentBalance' } } }
-        ]),
-        Vendor.aggregate([
-          { $match: { isActive: true, currentBalance: { $gt: 0 } } },
-          { $group: { _id: null, total: { $sum: '$currentBalance' } } }
-        ])
+        Vendor.countDocuments({ isActive: true })
       ]);
+
+      const [receivablesTotals, payablesTotals] = await Promise.all([
+        AccountingService.calculateReceivablesFromTransactions(),
+        AccountingService.calculatePayablesFromTransactions()
+      ]);
+
+      console.log(`[getDashboardStats] receivables=${receivablesTotals.netReceivables} payables=${payablesTotals.netPayables}`);
+
+      if ((await Order.countDocuments({ status: { $ne: 'cancelled' } })) === 0 && receivablesTotals.netReceivables !== 0) {
+        console.warn(`[getDashboardStats] Validation warning: no active orders but receivables=${receivablesTotals.netReceivables}`);
+      }
+      if ((await Purchase.countDocuments({ status: { $ne: 'cancelled' } })) === 0 && payablesTotals.netPayables !== 0) {
+        console.warn(`[getDashboardStats] Validation warning: no active purchases but payables=${payablesTotals.netPayables}`);
+      }
 
       stats = {
         period,
@@ -135,8 +140,8 @@ exports.getDashboardStats = async (req, res) => {
         },
         customers: totalCustomers,
         vendors: totalVendors,
-        receivables: receivablesTotal[0]?.total || 0,
-        payables: payablesTotal[0]?.total || 0
+        receivables: receivablesTotals.netReceivables || 0,
+        payables: payablesTotals.netPayables || 0
       };
 
     } else if (role === ROLES.ORDER_BOOKER) {
@@ -179,22 +184,25 @@ exports.getDashboardStats = async (req, res) => {
 
     } else if (role === ROLES.CUSTOMER) {
       // Customer sees their own stats
-      const [myOrders, myInvoices, myBalance] = await Promise.all([
+      const [myOrders, myInvoices, myBalance, myReceivables] = await Promise.all([
         Order.countDocuments({ customer: linkedCustomer }),
         Invoice.aggregate([
           { $match: { customer: linkedCustomer } },
           { $group: { _id: null, total: { $sum: '$grandTotal' }, count: { $sum: 1 } } }
         ]),
-        Customer.findById(linkedCustomer).select('currentBalance creditLimit')
+        Customer.findById(linkedCustomer).select('creditLimit'),
+        AccountingService.calculateReceivablesFromTransactions({ customerId: linkedCustomer })
       ]);
+
+      console.log(`[getDashboardStats:customer] customer=${linkedCustomer} receivable=${myReceivables.netReceivables}`);
 
       stats = {
         myOrders: myOrders,
         totalPurchases: myInvoices[0]?.total || 0,
         invoiceCount: myInvoices[0]?.count || 0,
-        currentBalance: myBalance?.currentBalance || 0,
+        currentBalance: myReceivables.netReceivables || 0,
         creditLimit: myBalance?.creditLimit || 0,
-        availableCredit: (myBalance?.creditLimit || 0) - (myBalance?.currentBalance || 0)
+        availableCredit: (myBalance?.creditLimit || 0) - (myReceivables.netReceivables || 0)
       };
     }
 
@@ -700,9 +708,9 @@ exports.getCustomerStats = async (req, res) => {
       });
     }
 
-    const [customer, recentOrders, recentInvoices] = await Promise.all([
+    const [customer, recentOrders, recentInvoices, receivableTotals] = await Promise.all([
       Customer.findById(customerId)
-        .select('businessName customerCode currentBalance creditLimit creditDays'),
+        .select('businessName customerCode creditLimit creditDays'),
       Order.find({ customer: customerId })
         .sort({ createdAt: -1 })
         .limit(5)
@@ -710,8 +718,13 @@ exports.getCustomerStats = async (req, res) => {
       Invoice.find({ customer: customerId })
         .sort({ invoiceDate: -1 })
         .limit(5)
-        .select('invoiceNumber grandTotal invoiceDate paymentStatus')
+        .select('invoiceNumber grandTotal invoiceDate paymentStatus'),
+      AccountingService.calculateReceivablesFromTransactions({ customerId })
     ]);
+
+    if (customer) {
+      customer.currentBalance = receivableTotals.netReceivables || 0;
+    }
 
     res.json({
       success: true,
@@ -764,8 +777,6 @@ exports.getDistributorStats = async (req, res) => {
       totalCustomers,
       activeCustomers,
       totalVendors,
-      receivablesTotal,
-      payablesTotal,
       cashPosition,
       userStats,
       topOrderBookers
@@ -812,14 +823,6 @@ exports.getDistributorStats = async (req, res) => {
       Customer.countDocuments(),
       Customer.countDocuments({ isActive: true }),
       Vendor.countDocuments({ isActive: true }),
-      Customer.aggregate([
-        { $match: { isActive: true, currentBalance: { $gt: 0 } } },
-        { $group: { _id: null, total: { $sum: '$currentBalance' }, count: { $sum: 1 } }}
-      ]),
-      Vendor.aggregate([
-        { $match: { isActive: true, currentBalance: { $gt: 0 } } },
-        { $group: { _id: null, total: { $sum: '$currentBalance' }, count: { $sum: 1 } }}
-      ]),
       ChartOfAccount.find({
         $or: [{ isCashAccount: true }, { isBankAccount: true }],
         isActive: true
@@ -837,6 +840,13 @@ exports.getDistributorStats = async (req, res) => {
         { $limit: 5 }
       ])
     ]);
+
+    const [receivablesTotal, payablesTotal] = await Promise.all([
+      AccountingService.calculateReceivablesFromTransactions(),
+      AccountingService.calculatePayablesFromTransactions()
+    ]);
+
+    console.log(`[getDistributorStats] receivables=${receivablesTotal.netReceivables} payables=${payablesTotal.netPayables}`);
 
     // Calculate totals
     const totalCash = cashPosition.filter(a => a.isCashAccount).reduce((sum, a) => sum + a.currentBalance, 0);
@@ -889,12 +899,12 @@ exports.getDistributorStats = async (req, res) => {
         },
         vendors: totalVendors,
         receivables: {
-          total: receivablesTotal[0]?.total || 0,
-          count: receivablesTotal[0]?.count || 0
+          total: receivablesTotal.netReceivables || 0,
+          count: receivablesTotal.orderCount || 0
         },
         payables: {
-          total: payablesTotal[0]?.total || 0,
-          count: payablesTotal[0]?.count || 0
+          total: payablesTotal.netPayables || 0,
+          count: payablesTotal.purchaseCount || 0
         },
         cashPosition: {
           cashInHand: totalCash,
@@ -980,13 +990,18 @@ exports.getSalesTrend = async (req, res) => {
 // @access  Distributor, Computer Operator
 exports.getCustomerAging = async (req, res) => {
   try {
-    const customers = await Customer.find({ 
-      isActive: true, 
-      currentBalance: { $gt: 0 } 
-    })
-    .select('businessName customerCode currentBalance phone')
-    .sort({ currentBalance: -1 })
-    .limit(20);
+    const receivablesData = await AccountingService.getReceivablesByCustomer();
+    const customers = receivablesData.customers
+      .map(customer => ({
+        _id: customer._id,
+        businessName: customer.businessName,
+        customerCode: customer.customerCode,
+        currentBalance: customer.currentBalance,
+        phone: customer.phone
+      }))
+      .slice(0, 20);
+
+    console.log(`[getCustomerAging] customersWithReceivables=${customers.length} totalReceivables=${receivablesData.summary.totalReceivables}`);
 
     // Get last payment date for each customer
     const customerIds = customers.map(c => c._id);

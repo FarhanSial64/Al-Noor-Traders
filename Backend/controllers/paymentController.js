@@ -481,11 +481,6 @@ exports.updateReceipt = async (req, res) => {
     // Update balance if amount changed
     if (amountDifference !== 0) {
       receipt.partyBalanceAfter = receipt.partyBalanceBefore - receipt.amount;
-      
-      // Update customer balance
-      await Customer.findByIdAndUpdate(receipt.partyId, {
-        $inc: { currentBalance: -amountDifference }
-      });
 
       // Update accounting entries via service
       await AccountingService.updateReceiptEntry({
@@ -541,10 +536,12 @@ exports.deleteReceipt = async (req, res) => {
       });
     }
 
-    // Reverse the customer balance
-    await Customer.findByIdAndUpdate(receipt.partyId, {
-      $inc: { currentBalance: receipt.amount }
-    });
+    if (receipt.status === 'cancelled') {
+      return res.status(400).json({
+        success: false,
+        message: 'Receipt already cancelled'
+      });
+    }
 
     // Reverse accounting entries
     await AccountingService.reverseReceiptEntry({
@@ -569,6 +566,8 @@ exports.deleteReceipt = async (req, res) => {
     // Mark as cancelled instead of hard delete for audit trail
     receipt.status = 'cancelled';
     await receipt.save();
+
+    await AccountingService.syncCustomerBalance(receipt.partyId);
 
     res.json({
       success: true,
@@ -628,11 +627,6 @@ exports.updatePayment = async (req, res) => {
     // Update balance if amount changed
     if (amountDifference !== 0) {
       payment.partyBalanceAfter = payment.partyBalanceBefore - payment.amount;
-      
-      // Update vendor balance
-      await Vendor.findByIdAndUpdate(payment.partyId, {
-        $inc: { currentBalance: -amountDifference }
-      });
 
       // Update accounting entries via service
       await AccountingService.updatePaymentEntry({
@@ -688,10 +682,12 @@ exports.deletePayment = async (req, res) => {
       });
     }
 
-    // Reverse the vendor balance
-    await Vendor.findByIdAndUpdate(payment.partyId, {
-      $inc: { currentBalance: payment.amount }
-    });
+    if (payment.status === 'cancelled') {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment already cancelled'
+      });
+    }
 
     // Reverse accounting entries
     await AccountingService.reversePaymentEntry({
@@ -716,6 +712,8 @@ exports.deletePayment = async (req, res) => {
     // Mark as cancelled instead of hard delete for audit trail
     payment.status = 'cancelled';
     await payment.save();
+
+    await AccountingService.syncVendorBalance(payment.partyId);
 
     res.json({
       success: true,

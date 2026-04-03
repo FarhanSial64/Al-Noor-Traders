@@ -3,6 +3,8 @@ const Vendor = require('../models/Vendor');
 const { Product, Unit } = require('../models/Product');
 const InventoryService = require('../services/inventoryService');
 const AccountingService = require('../services/accountingService');
+const JournalEntry = require('../models/JournalEntry');
+const LedgerEntry = require('../models/LedgerEntry');
 const { logFinancialTransaction } = require('../middleware/auditLogger');
 const mongoose = require('mongoose');
 
@@ -328,6 +330,9 @@ exports.updatePurchase = async (req, res) => {
 
     // Collect all affected product IDs (both original and new)
     const affectedProductIds = new Set();
+    const originalVendorId = purchase.vendor;
+    const originalVendorName = purchase.vendorName;
+    const originalGrandTotal = purchase.grandTotal;
     
     // Store original items for inventory adjustment if stock was already updated
     const originalItems = purchase.stockUpdated ? [...purchase.items] : null;
@@ -449,21 +454,27 @@ exports.updatePurchase = async (req, res) => {
         });
       }
 
-      // Update accounting entry
-      await AccountingService.createPurchaseEntry({
-        vendorId: purchase.vendor,
-        vendorName: purchase.vendorName,
-        purchaseId: purchase._id,
-        purchaseNumber: purchase.purchaseNumber,
-        amount: purchase.grandTotal,
-        userId: req.user._id,
-        userName: req.user.fullName,
-        entryDate: purchase.purchaseDate,
-        isAdjustment: true
-      });
     }
 
     await purchase.save({ session });
+
+    // Update accounting entry based on actual difference (prevents duplicate payables)
+    // Only for purchases that already posted stock/accounting
+    if (purchase.stockUpdated) {
+      await AccountingService.updatePurchaseEntry({
+        purchaseId: purchase._id,
+        purchaseNumber: purchase.purchaseNumber,
+        oldVendorId: originalVendorId,
+        oldVendorName: originalVendorName,
+        newVendorId: purchase.vendor,
+        newVendorName: purchase.vendorName,
+        oldAmount: originalGrandTotal,
+        newAmount: purchase.grandTotal,
+        userId: req.user._id,
+        userName: req.user.fullName,
+        entryDate: purchase.purchaseDate
+      });
+    }
 
     // Collect product IDs for pricing recalculation AFTER transaction
     const uniqueProductIds = [...affectedProductIds];
@@ -478,6 +489,12 @@ exports.updatePurchase = async (req, res) => {
     } catch (pricingError) {
       console.error('Pricing recalculation error (non-fatal):', pricingError);
       // Don't fail the request - pricing can be recalculated later
+    }
+
+    // Keep static vendor balance in sync with dynamic payable calculation
+    await AccountingService.syncVendorBalance(purchase.vendor);
+    if (String(originalVendorId) !== String(purchase.vendor)) {
+      await AccountingService.syncVendorBalance(originalVendorId);
     }
 
     await logFinancialTransaction(req, {
@@ -682,6 +699,9 @@ exports.deletePurchase = async (req, res) => {
 
     // Collect affected product IDs
     const affectedProductIds = purchase.items.map(item => item.product.toString());
+    const journalCountBefore = await JournalEntry.countDocuments({ sourceId: purchase._id });
+    const ledgerCountBefore = await LedgerEntry.countDocuments({ sourceId: purchase._id });
+    const hasPurchaseAccounting = await JournalEntry.exists({ sourceType: 'Purchase', sourceId: purchase._id });
 
     console.log(`[deletePurchase] Deleting purchase ${purchase.purchaseNumber} with ${purchase.items.length} items, affected products: ${affectedProductIds.length}`);
 
@@ -705,21 +725,26 @@ exports.deletePurchase = async (req, res) => {
       }
     }
 
-    // Reverse accounting entries
-    await AccountingService.reversePurchaseEntry({
-      purchaseId: purchase._id,
-      purchaseNumber: purchase.purchaseNumber,
-      vendorId: purchase.vendor,
-      vendorName: purchase.vendorName,
-      amount: purchase.grandTotal,
-      userId: req.user._id,
-      userName: req.user.fullName
-    });
+    // Reverse accounting entries only if source purchase accounting exists
+    if (hasPurchaseAccounting) {
+      await AccountingService.reversePurchaseEntry({
+        purchaseId: purchase._id,
+        purchaseNumber: purchase.purchaseNumber,
+        vendorId: purchase.vendor,
+        vendorName: purchase.vendorName,
+        amount: purchase.grandTotal,
+        userId: req.user._id,
+        userName: req.user.fullName
+      });
+    } else {
+      console.log(`[deletePurchase] No source purchase journal found for ${purchase.purchaseNumber}; skipping AP reversal.`);
+    }
 
     // Store purchase info for logging
     const purchaseNumber = purchase.purchaseNumber;
     const vendorName = purchase.vendorName;
     const grandTotal = purchase.grandTotal;
+    const vendorId = purchase.vendor;
 
     // Delete the purchase
     await Purchase.findByIdAndDelete(req.params.id).session(session);
@@ -748,6 +773,13 @@ exports.deletePurchase = async (req, res) => {
       console.error('[deletePurchase] Stock sync error (non-fatal):', syncError);
     }
 
+    // Keep static vendor balance in sync with dynamic payable calculation
+    await AccountingService.syncVendorBalance(vendorId);
+
+    const journalCountAfter = await JournalEntry.countDocuments({ sourceId: purchase._id });
+    const ledgerCountAfter = await LedgerEntry.countDocuments({ sourceId: purchase._id });
+    console.log(`[deletePurchase] Entry counts sourceId=${purchase._id} journal ${journalCountBefore}->${journalCountAfter}, ledger ${ledgerCountBefore}->${ledgerCountAfter}`);
+
     await logFinancialTransaction(req, {
       action: 'DELETE',
       module: 'purchase',
@@ -760,7 +792,7 @@ exports.deletePurchase = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Purchase deleted & inventory synced successfully'
+      message: 'Purchase deleted, accounting reversed & inventory synced successfully'
     });
 
   } catch (error) {

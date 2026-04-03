@@ -723,6 +723,576 @@ class AccountingService {
   }
 
   /**
+   * Dynamic receivables calculation from transactions
+   * Formula: Receivables = Sales Orders - Customer Receipts
+   */
+  static async calculateReceivablesFromTransactions({ customerId = null } = {}) {
+    const Order = require('../models/Order');
+    const Payment = require('../models/Payment');
+
+    const orderMatch = { status: { $ne: 'cancelled' } };
+    if (customerId) {
+      orderMatch.customer = customerId;
+    }
+
+    const receiptMatch = {
+      paymentType: 'receipt',
+      partyType: 'customer',
+      status: 'completed'
+    };
+    if (customerId) {
+      receiptMatch.partyId = customerId;
+    }
+
+    const [salesAgg, receiptAgg] = await Promise.all([
+      Order.aggregate([
+        { $match: orderMatch },
+        {
+          $group: {
+            _id: null,
+            totalSales: { $sum: '$grandTotal' },
+            orderCount: { $sum: 1 }
+          }
+        }
+      ]),
+      Payment.aggregate([
+        { $match: receiptMatch },
+        {
+          $group: {
+            _id: null,
+            totalReceipts: { $sum: '$amount' },
+            receiptCount: { $sum: 1 }
+          }
+        }
+      ])
+    ]);
+
+    const totalSales = salesAgg[0]?.totalSales || 0;
+    const totalReceipts = receiptAgg[0]?.totalReceipts || 0;
+    const netReceivables = totalSales - totalReceipts;
+
+    console.log(`[calculateReceivablesFromTransactions] customer=${customerId || 'ALL'} sales=${totalSales} receipts=${totalReceipts} net=${netReceivables}`);
+
+    return {
+      totalSales,
+      totalReceipts,
+      netReceivables,
+      orderCount: salesAgg[0]?.orderCount || 0,
+      receiptCount: receiptAgg[0]?.receiptCount || 0
+    };
+  }
+
+  /**
+   * Dynamic payables calculation from transactions
+   * Formula: Payables = Purchases - Vendor Payments
+   */
+  static async calculatePayablesFromTransactions({ vendorId = null } = {}) {
+    const Purchase = require('../models/Purchase');
+    const Payment = require('../models/Payment');
+
+    const purchaseMatch = { status: { $ne: 'cancelled' } };
+    if (vendorId) {
+      purchaseMatch.vendor = vendorId;
+    }
+
+    const paymentMatch = {
+      paymentType: 'payment',
+      partyType: 'vendor',
+      status: 'completed'
+    };
+    if (vendorId) {
+      paymentMatch.partyId = vendorId;
+    }
+
+    const [purchaseAgg, paymentAgg] = await Promise.all([
+      Purchase.aggregate([
+        { $match: purchaseMatch },
+        {
+          $group: {
+            _id: null,
+            totalPurchases: { $sum: '$grandTotal' },
+            purchaseCount: { $sum: 1 }
+          }
+        }
+      ]),
+      Payment.aggregate([
+        { $match: paymentMatch },
+        {
+          $group: {
+            _id: null,
+            totalPayments: { $sum: '$amount' },
+            paymentCount: { $sum: 1 }
+          }
+        }
+      ])
+    ]);
+
+    const totalPurchases = purchaseAgg[0]?.totalPurchases || 0;
+    const totalPayments = paymentAgg[0]?.totalPayments || 0;
+    const netPayables = totalPurchases - totalPayments;
+
+    console.log(`[calculatePayablesFromTransactions] vendor=${vendorId || 'ALL'} purchases=${totalPurchases} payments=${totalPayments} net=${netPayables}`);
+
+    return {
+      totalPurchases,
+      totalPayments,
+      netPayables,
+      purchaseCount: purchaseAgg[0]?.purchaseCount || 0,
+      paymentCount: paymentAgg[0]?.paymentCount || 0
+    };
+  }
+
+  static async syncCustomerBalance(customerId) {
+    const { netReceivables } = await this.calculateReceivablesFromTransactions({ customerId });
+    await Customer.findByIdAndUpdate(customerId, { currentBalance: netReceivables });
+    return netReceivables;
+  }
+
+  static async syncVendorBalance(vendorId) {
+    const { netPayables } = await this.calculatePayablesFromTransactions({ vendorId });
+    await Vendor.findByIdAndUpdate(vendorId, { currentBalance: netPayables });
+    return netPayables;
+  }
+
+  static async getReceivablesByCustomer() {
+    const Order = require('../models/Order');
+    const Payment = require('../models/Payment');
+
+    const [salesByCustomer, receiptsByCustomer, customers] = await Promise.all([
+      Order.aggregate([
+        { $match: { status: { $ne: 'cancelled' } } },
+        { $group: { _id: '$customer', totalSales: { $sum: '$grandTotal' }, orderCount: { $sum: 1 } } }
+      ]),
+      Payment.aggregate([
+        { $match: { paymentType: 'receipt', partyType: 'customer', status: 'completed' } },
+        { $group: { _id: '$partyId', totalReceipts: { $sum: '$amount' }, receiptCount: { $sum: 1 } } }
+      ]),
+      Customer.find({ isActive: true }).select('customerCode businessName contactPerson phone creditLimit creditDays')
+    ]);
+
+    const salesMap = new Map(salesByCustomer.map(item => [String(item._id), item]));
+    const receiptsMap = new Map(receiptsByCustomer.map(item => [String(item._id), item]));
+
+    const customersWithBalances = customers
+      .map(customer => {
+        const sales = salesMap.get(String(customer._id));
+        const receipts = receiptsMap.get(String(customer._id));
+        const totalSales = sales?.totalSales || 0;
+        const totalReceipts = receipts?.totalReceipts || 0;
+        const currentBalance = totalSales - totalReceipts;
+
+        return {
+          _id: customer._id,
+          customerCode: customer.customerCode,
+          businessName: customer.businessName,
+          contactPerson: customer.contactPerson,
+          phone: customer.phone,
+          creditLimit: customer.creditLimit || 0,
+          creditDays: customer.creditDays || 0,
+          currentBalance,
+          orderCount: sales?.orderCount || 0,
+          receiptCount: receipts?.receiptCount || 0
+        };
+      })
+      .filter(customer => customer.currentBalance > 0)
+      .sort((a, b) => b.currentBalance - a.currentBalance);
+
+    const totalReceivables = customersWithBalances.reduce((sum, customer) => sum + customer.currentBalance, 0);
+
+    return {
+      customers: customersWithBalances,
+      summary: {
+        totalReceivables,
+        customerCount: customersWithBalances.length
+      }
+    };
+  }
+
+  static async getPayablesByVendor() {
+    const Purchase = require('../models/Purchase');
+    const Payment = require('../models/Payment');
+
+    const [purchasesByVendor, paymentsByVendor, vendors] = await Promise.all([
+      Purchase.aggregate([
+        { $match: { status: { $ne: 'cancelled' } } },
+        { $group: { _id: '$vendor', totalPurchases: { $sum: '$grandTotal' }, purchaseCount: { $sum: 1 } } }
+      ]),
+      Payment.aggregate([
+        { $match: { paymentType: 'payment', partyType: 'vendor', status: 'completed' } },
+        { $group: { _id: '$partyId', totalPayments: { $sum: '$amount' }, paymentCount: { $sum: 1 } } }
+      ]),
+      Vendor.find({ isActive: true }).select('vendorCode businessName contactPerson phone paymentTerms creditDays')
+    ]);
+
+    const purchaseMap = new Map(purchasesByVendor.map(item => [String(item._id), item]));
+    const paymentMap = new Map(paymentsByVendor.map(item => [String(item._id), item]));
+
+    const vendorsWithBalances = vendors
+      .map(vendor => {
+        const purchases = purchaseMap.get(String(vendor._id));
+        const payments = paymentMap.get(String(vendor._id));
+        const totalPurchases = purchases?.totalPurchases || 0;
+        const totalPayments = payments?.totalPayments || 0;
+        const currentBalance = totalPurchases - totalPayments;
+
+        return {
+          _id: vendor._id,
+          vendorCode: vendor.vendorCode,
+          businessName: vendor.businessName,
+          contactPerson: vendor.contactPerson,
+          phone: vendor.phone,
+          paymentTerms: vendor.paymentTerms,
+          creditDays: vendor.creditDays || 0,
+          currentBalance,
+          purchaseCount: purchases?.purchaseCount || 0,
+          paymentCount: payments?.paymentCount || 0
+        };
+      })
+      .filter(vendor => vendor.currentBalance > 0)
+      .sort((a, b) => b.currentBalance - a.currentBalance);
+
+    const totalPayables = vendorsWithBalances.reduce((sum, vendor) => sum + vendor.currentBalance, 0);
+
+    return {
+      vendors: vendorsWithBalances,
+      summary: {
+        totalPayables,
+        vendorCount: vendorsWithBalances.length
+      }
+    };
+  }
+
+  static async updateReceiptEntry({ paymentId, oldAmount, newAmount, userId, userName }) {
+    const Payment = require('../models/Payment');
+    const payment = await Payment.findById(paymentId);
+    if (!payment) {
+      throw new Error('Receipt not found for accounting update');
+    }
+
+    const diff = newAmount - oldAmount;
+    if (Math.abs(diff) < 0.01) return null;
+
+    const arAccount = await ChartOfAccount.findOne({ accountSubType: 'accounts_receivable' });
+    const paymentAccountId = payment.cashAccount || payment.bankAccount;
+    const paymentAccount = paymentAccountId
+      ? await ChartOfAccount.findById(paymentAccountId)
+      : await ChartOfAccount.findOne({ isCashAccount: true });
+
+    if (!arAccount || !paymentAccount) {
+      throw new Error('Required accounts not found for receipt update');
+    }
+
+    const increase = diff > 0;
+    const amount = Math.abs(diff);
+
+    const journalEntry = await this.createJournalEntry({
+      entryType: 'adjustment',
+      entryDate: new Date(),
+      narration: `Receipt ${payment.paymentNumber} adjusted by ${amount}`,
+      lines: [
+        {
+          accountId: paymentAccount._id,
+          debitAmount: increase ? amount : 0,
+          creditAmount: increase ? 0 : amount,
+          description: `Receipt adjustment for ${payment.partyName}`
+        },
+        {
+          accountId: arAccount._id,
+          debitAmount: increase ? 0 : amount,
+          creditAmount: increase ? amount : 0,
+          description: `AR adjustment for ${payment.partyName}`,
+          partyType: 'customer',
+          partyId: payment.partyId,
+          partyName: payment.partyName
+        }
+      ],
+      sourceType: 'ReceiptAdjustment',
+      sourceId: payment._id,
+      sourceNumber: `${payment.paymentNumber}-ADJ`,
+      userId,
+      userName
+    });
+
+    await this.syncCustomerBalance(payment.partyId);
+    return journalEntry;
+  }
+
+  static async updatePaymentEntry({ paymentId, oldAmount, newAmount, userId, userName }) {
+    const Payment = require('../models/Payment');
+    const payment = await Payment.findById(paymentId);
+    if (!payment) {
+      throw new Error('Payment not found for accounting update');
+    }
+
+    const diff = newAmount - oldAmount;
+    if (Math.abs(diff) < 0.01) return null;
+
+    const apAccount = await ChartOfAccount.findOne({ accountSubType: 'accounts_payable' });
+    const paymentAccountId = payment.cashAccount || payment.bankAccount;
+    const paymentAccount = paymentAccountId
+      ? await ChartOfAccount.findById(paymentAccountId)
+      : await ChartOfAccount.findOne({ isCashAccount: true });
+
+    if (!apAccount || !paymentAccount) {
+      throw new Error('Required accounts not found for payment update');
+    }
+
+    const increase = diff > 0;
+    const amount = Math.abs(diff);
+
+    const journalEntry = await this.createJournalEntry({
+      entryType: 'adjustment',
+      entryDate: new Date(),
+      narration: `Payment ${payment.paymentNumber} adjusted by ${amount}`,
+      lines: [
+        {
+          accountId: apAccount._id,
+          debitAmount: increase ? amount : 0,
+          creditAmount: increase ? 0 : amount,
+          description: `AP adjustment for ${payment.partyName}`,
+          partyType: 'vendor',
+          partyId: payment.partyId,
+          partyName: payment.partyName
+        },
+        {
+          accountId: paymentAccount._id,
+          debitAmount: increase ? 0 : amount,
+          creditAmount: increase ? amount : 0,
+          description: `Payment adjustment for ${payment.partyName}`
+        }
+      ],
+      sourceType: 'PaymentAdjustment',
+      sourceId: payment._id,
+      sourceNumber: `${payment.paymentNumber}-ADJ`,
+      userId,
+      userName
+    });
+
+    await this.syncVendorBalance(payment.partyId);
+    return journalEntry;
+  }
+
+  static async reverseReceiptEntry({ paymentId, amount, customerId, userId, userName }) {
+    const Payment = require('../models/Payment');
+    const payment = await Payment.findById(paymentId);
+    if (!payment) {
+      throw new Error('Receipt not found for reversal');
+    }
+
+    const arAccount = await ChartOfAccount.findOne({ accountSubType: 'accounts_receivable' });
+    const paymentAccountId = payment.cashAccount || payment.bankAccount;
+    const paymentAccount = paymentAccountId
+      ? await ChartOfAccount.findById(paymentAccountId)
+      : await ChartOfAccount.findOne({ isCashAccount: true });
+
+    if (!arAccount || !paymentAccount) {
+      throw new Error('Required accounts not found for receipt reversal');
+    }
+
+    const journalEntry = await this.createJournalEntry({
+      entryType: 'receipt_reversal',
+      entryDate: new Date(),
+      narration: `Receipt ${payment.paymentNumber} reversed`,
+      lines: [
+        {
+          accountId: arAccount._id,
+          debitAmount: amount,
+          creditAmount: 0,
+          description: `AR restored for ${payment.partyName}`,
+          partyType: 'customer',
+          partyId: payment.partyId,
+          partyName: payment.partyName
+        },
+        {
+          accountId: paymentAccount._id,
+          debitAmount: 0,
+          creditAmount: amount,
+          description: `Cash/Bank reversed for ${payment.partyName}`
+        }
+      ],
+      sourceType: 'ReceiptReversal',
+      sourceId: payment._id,
+      sourceNumber: `${payment.paymentNumber}-REV`,
+      userId,
+      userName
+    });
+
+    await this.syncCustomerBalance(customerId || payment.partyId);
+    return journalEntry;
+  }
+
+  static async reversePaymentEntry({ paymentId, amount, vendorId, userId, userName }) {
+    const Payment = require('../models/Payment');
+    const payment = await Payment.findById(paymentId);
+    if (!payment) {
+      throw new Error('Payment not found for reversal');
+    }
+
+    const apAccount = await ChartOfAccount.findOne({ accountSubType: 'accounts_payable' });
+    const paymentAccountId = payment.cashAccount || payment.bankAccount;
+    const paymentAccount = paymentAccountId
+      ? await ChartOfAccount.findById(paymentAccountId)
+      : await ChartOfAccount.findOne({ isCashAccount: true });
+
+    if (!apAccount || !paymentAccount) {
+      throw new Error('Required accounts not found for payment reversal');
+    }
+
+    const journalEntry = await this.createJournalEntry({
+      entryType: 'payment_reversal',
+      entryDate: new Date(),
+      narration: `Payment ${payment.paymentNumber} reversed`,
+      lines: [
+        {
+          accountId: paymentAccount._id,
+          debitAmount: amount,
+          creditAmount: 0,
+          description: `Cash/Bank restored for ${payment.partyName}`
+        },
+        {
+          accountId: apAccount._id,
+          debitAmount: 0,
+          creditAmount: amount,
+          description: `AP restored for ${payment.partyName}`,
+          partyType: 'vendor',
+          partyId: payment.partyId,
+          partyName: payment.partyName
+        }
+      ],
+      sourceType: 'PaymentReversal',
+      sourceId: payment._id,
+      sourceNumber: `${payment.paymentNumber}-REV`,
+      userId,
+      userName
+    });
+
+    await this.syncVendorBalance(vendorId || payment.partyId);
+    return journalEntry;
+  }
+
+  static async updatePurchaseEntry({
+    purchaseId,
+    purchaseNumber,
+    oldVendorId,
+    oldVendorName,
+    newVendorId,
+    newVendorName,
+    oldAmount,
+    newAmount,
+    userId,
+    userName,
+    entryDate
+  }) {
+    const inventoryAccount = await ChartOfAccount.findOne({ accountSubType: 'inventory' });
+    const apAccount = await ChartOfAccount.findOne({ accountSubType: 'accounts_payable' });
+    if (!inventoryAccount || !apAccount) {
+      throw new Error('Required accounts not found in Chart of Accounts');
+    }
+
+    const sameVendor = String(oldVendorId) === String(newVendorId);
+    const amountDiff = (newAmount || 0) - (oldAmount || 0);
+
+    if (sameVendor && Math.abs(amountDiff) < 0.01) {
+      return null;
+    }
+
+    let lines = [];
+
+    if (sameVendor) {
+      const diffAbs = Math.abs(amountDiff);
+      if (amountDiff > 0) {
+        lines = [
+          {
+            accountId: inventoryAccount._id,
+            debitAmount: diffAbs,
+            creditAmount: 0,
+            description: `Purchase increase ${purchaseNumber}`
+          },
+          {
+            accountId: apAccount._id,
+            debitAmount: 0,
+            creditAmount: diffAbs,
+            description: `AP increase for ${newVendorName}`,
+            partyType: 'vendor',
+            partyId: newVendorId,
+            partyName: newVendorName
+          }
+        ];
+      } else {
+        lines = [
+          {
+            accountId: apAccount._id,
+            debitAmount: diffAbs,
+            creditAmount: 0,
+            description: `AP decrease for ${newVendorName}`,
+            partyType: 'vendor',
+            partyId: newVendorId,
+            partyName: newVendorName
+          },
+          {
+            accountId: inventoryAccount._id,
+            debitAmount: 0,
+            creditAmount: diffAbs,
+            description: `Purchase decrease ${purchaseNumber}`
+          }
+        ];
+      }
+    } else {
+      lines = [
+        {
+          accountId: apAccount._id,
+          debitAmount: oldAmount,
+          creditAmount: 0,
+          description: `Vendor changed - reverse AP for ${oldVendorName}`,
+          partyType: 'vendor',
+          partyId: oldVendorId,
+          partyName: oldVendorName
+        },
+        {
+          accountId: inventoryAccount._id,
+          debitAmount: 0,
+          creditAmount: oldAmount,
+          description: `Vendor changed - reverse inventory ${purchaseNumber}`
+        },
+        {
+          accountId: inventoryAccount._id,
+          debitAmount: newAmount,
+          creditAmount: 0,
+          description: `Vendor changed - add inventory ${purchaseNumber}`
+        },
+        {
+          accountId: apAccount._id,
+          debitAmount: 0,
+          creditAmount: newAmount,
+          description: `Vendor changed - AP for ${newVendorName}`,
+          partyType: 'vendor',
+          partyId: newVendorId,
+          partyName: newVendorName
+        }
+      ];
+    }
+
+    const journalEntry = await this.createJournalEntry({
+      entryType: 'adjustment',
+      entryDate: entryDate || new Date(),
+      narration: `Purchase ${purchaseNumber} updated`,
+      lines,
+      sourceType: 'PurchaseAdjustment',
+      sourceId: purchaseId,
+      sourceNumber: `${purchaseNumber}-ADJ`,
+      userId,
+      userName
+    });
+
+    await this.syncVendorBalance(oldVendorId);
+    if (!sameVendor) {
+      await this.syncVendorBalance(newVendorId);
+    }
+
+    return journalEntry;
+  }
+
+  /**
    * Get Trial Balance
    */
   static async getTrialBalance(asOfDate) {
@@ -975,16 +1545,10 @@ class AccountingService {
     ]);
     const inventoryValue = inventoryValuation[0]?.totalValue || 0;
     
-    // Get AR total (customers who owe us)
-    const arTotal = await Customer.aggregate([
-      { $match: { currentBalance: { $gt: 0 } } },
-      { $group: { _id: null, total: { $sum: '$currentBalance' } } }
-    ]);
-    
-    // Get AP total (what we owe to vendors)
-    const apTotal = await Vendor.aggregate([
-      { $match: { currentBalance: { $gt: 0 } } },
-      { $group: { _id: null, total: { $sum: '$currentBalance' } } }
+    // Get AR/AP totals from dynamic transaction calculations
+    const [arTotals, apTotals] = await Promise.all([
+      this.calculateReceivablesFromTransactions(),
+      this.calculatePayablesFromTransactions()
     ]);
     
     // Classify accounts by type
@@ -1006,9 +1570,9 @@ class AccountingService {
       
       // Override with actual calculated values for control accounts
       if (account.accountSubType === 'accounts_receivable') {
-        balance = arTotal[0]?.total || 0;
+        balance = arTotals.netReceivables || 0;
       } else if (account.accountSubType === 'accounts_payable') {
-        balance = apTotal[0]?.total || 0;
+        balance = apTotals.netPayables || 0;
       } else if (account.accountSubType === 'inventory') {
         balance = inventoryValue;
       }

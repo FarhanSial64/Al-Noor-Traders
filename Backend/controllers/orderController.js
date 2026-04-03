@@ -3,6 +3,8 @@ const Customer = require('../models/Customer');
 const { Product } = require('../models/Product');
 const Invoice = require('../models/Invoice');
 const { InventoryValuation } = require('../models/Inventory');
+const JournalEntry = require('../models/JournalEntry');
+const LedgerEntry = require('../models/LedgerEntry');
 const InventoryService = require('../services/inventoryService');
 const AccountingService = require('../services/accountingService');
 const { createAuditLog, logFinancialTransaction } = require('../middleware/auditLogger');
@@ -1578,6 +1580,10 @@ exports.deleteOrder = async (req, res) => {
     const customerName = customer?.businessName || order.customerName || 'Unknown';
     const grandTotal = order.grandTotal;
     const affectedProductIds = order.items.map(item => item.product?.toString() || item.product);
+    const sourceIdsForCount = [order._id];
+    if (order.invoiceId) sourceIdsForCount.push(order.invoiceId);
+    const journalCountBefore = await JournalEntry.countDocuments({ sourceId: { $in: sourceIdsForCount } });
+    const ledgerCountBefore = await LedgerEntry.countDocuments({ sourceId: { $in: sourceIdsForCount } });
 
     console.log(`[deleteOrder] Deleting order ${orderNumber} with ${order.items.length} items, affected products: ${affectedProductIds.length}`);
 
@@ -1605,22 +1611,31 @@ exports.deleteOrder = async (req, res) => {
       }
     }
 
+    // Check whether original sales accounting exists for this order/invoice
+    const hasSalesAccounting = order.invoiceId
+      ? await JournalEntry.exists({ sourceType: 'Invoice', sourceId: order.invoiceId })
+      : false;
+
     // Delete related invoice if exists
     if (order.invoiceGenerated && order.invoiceId) {
       await Invoice.findByIdAndDelete(order.invoiceId).session(session);
     }
 
-    // Reverse accounting entries
-    await AccountingService.reverseOrderEntry({
-      orderId: order._id,
-      invoiceNumber: order.orderNumber,
-      customerId: order.customer,
-      customerName: customerName,
-      salesAmount: grandTotal,
-      cogsAmount: totalCogs,
-      userId: req.user._id,
-      userName: req.user.fullName
-    });
+    // Reverse accounting entries only when original sales accounting exists
+    if (hasSalesAccounting) {
+      await AccountingService.reverseOrderEntry({
+        orderId: order._id,
+        invoiceNumber: order.orderNumber,
+        customerId: order.customer,
+        customerName: customerName,
+        salesAmount: grandTotal,
+        cogsAmount: totalCogs,
+        userId: req.user._id,
+        userName: req.user.fullName
+      });
+    } else {
+      console.log(`[deleteOrder] No source sales journal found for order ${order.orderNumber}; skipping AR reversal.`);
+    }
 
     // Delete the order
     await Order.findByIdAndDelete(req.params.id).session(session);
@@ -1640,6 +1655,13 @@ exports.deleteOrder = async (req, res) => {
       console.error('[deleteOrder] Stock sync error (non-fatal):', syncError);
     }
 
+    // Keep static customer balance in sync with dynamic receivables
+    await AccountingService.syncCustomerBalance(order.customer);
+
+    const journalCountAfter = await JournalEntry.countDocuments({ sourceId: { $in: sourceIdsForCount } });
+    const ledgerCountAfter = await LedgerEntry.countDocuments({ sourceId: { $in: sourceIdsForCount } });
+    console.log(`[deleteOrder] Entry counts sourceIds=${sourceIdsForCount.join(',')} journal ${journalCountBefore}->${journalCountAfter}, ledger ${ledgerCountBefore}->${ledgerCountAfter}`);
+
     await logFinancialTransaction(req, {
       action: 'DELETE',
       module: 'order',
@@ -1652,7 +1674,7 @@ exports.deleteOrder = async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Order deleted & inventory synced successfully'
+      message: 'Order deleted, accounting corrected & inventory synced successfully'
     });
   } catch (error) {
     await session.abortTransaction();
