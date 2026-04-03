@@ -128,3 +128,5 @@ router.post(
   inventoryController.syncProductStock
 );
 
+module.exports = router;
+
