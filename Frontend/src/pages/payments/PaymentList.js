@@ -249,8 +249,7 @@ const PaymentList = () => {
                       <TableCell align="right">Amount</TableCell>
                       <TableCell>Paid By</TableCell>
                       <TableCell>Status</TableCell>
-                      <TableCell align="center">Print</TableCell>
-                      {isDistributor && <TableCell align="center">Actions</TableCell>}
+                      <TableCell align="center">Actions</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -270,31 +269,33 @@ const PaymentList = () => {
                         <TableCell>{payment.createdBy?.fullName || payment.createdByName || '-'}</TableCell>
                         <TableCell><Chip label={payment.status || 'completed'} size="small" color="success" /></TableCell>
                         <TableCell align="center">
-                          <Tooltip title="Print Voucher">
-                            <IconButton size="small" onClick={() => handlePrintSingle(payment)}>
-                              <PrintOutlined fontSize="small" />
-                            </IconButton>
-                          </Tooltip>
+                          <Box sx={{ display: 'flex', justifyContent: 'center', gap: 0.5 }}>
+                            <Tooltip title="Print Voucher">
+                              <IconButton size="small" onClick={() => handlePrintSingle(payment)}>
+                                <PrintOutlined fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                            {isDistributor && (
+                              <>
+                                <Tooltip title="Edit Payment">
+                                  <IconButton size="small" color="primary" onClick={() => handleEditClick(payment)} disabled={payment.status === 'cancelled'}>
+                                    <Edit fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+                                <Tooltip title="Delete Payment">
+                                  <IconButton size="small" color="error" onClick={() => handleDeleteClick(payment)} disabled={payment.status === 'cancelled'}>
+                                    <Delete fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+                              </>
+                            )}
+                          </Box>
                         </TableCell>
-                        {isDistributor && (
-                          <TableCell align="center">
-                            <Tooltip title="Edit Payment">
-                              <IconButton size="small" color="primary" onClick={() => handleEditClick(payment)} disabled={payment.status === 'cancelled'}>
-                                <Edit fontSize="small" />
-                              </IconButton>
-                            </Tooltip>
-                            <Tooltip title="Delete Payment">
-                              <IconButton size="small" color="error" onClick={() => handleDeleteClick(payment)} disabled={payment.status === 'cancelled'}>
-                                <Delete fontSize="small" />
-                              </IconButton>
-                            </Tooltip>
-                          </TableCell>
-                        )}
                       </TableRow>
                     ))}
                     {payments.length === 0 && (
                       <TableRow>
-                        <TableCell colSpan={isDistributor ? 10 : 9} align="center">No payments found</TableCell>
+                        <TableCell colSpan={9} align="center">No payments found</TableCell>
                       </TableRow>
                     )}
                   </TableBody>
