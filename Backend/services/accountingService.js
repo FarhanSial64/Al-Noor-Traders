@@ -1143,10 +1143,18 @@ class AccountingService {
     const paymentAccountId = payment.cashAccount || payment.bankAccount;
     const paymentAccount = paymentAccountId
       ? await ChartOfAccount.findById(paymentAccountId)
-      : await ChartOfAccount.findOne({ isCashAccount: true });
+      : await ChartOfAccount.findOne({
+          $or: [
+            { isCashAccount: true },
+            { isBankAccount: true },
+            { accountSubType: 'cash' },
+            { accountSubType: 'bank' }
+          ],
+          isActive: true
+        });
 
     if (!arAccount || !paymentAccount) {
-      throw new Error('Required accounts not found for receipt reversal');
+      throw new Error(`Required accounts not found for receipt reversal (paymentId: ${paymentId})`);
     }
 
     const journalEntry = await this.createJournalEntry({

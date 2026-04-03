@@ -480,7 +480,7 @@ const ReceiptList = () => {
         title="Delete Receipt"
         message={`Are you sure you want to delete receipt ${deleteDialog.receipt?.paymentNumber}? This will reverse the customer balance adjustment.`}
         onConfirm={handleDeleteConfirm}
-        onCancel={() => setDeleteDialog({ open: false, receipt: null })}
+        onClose={() => setDeleteDialog({ open: false, receipt: null })}
         confirmText="Delete"
         confirmColor="error"
       />
