@@ -1139,7 +1139,19 @@ class AccountingService {
       throw new Error('Receipt not found for reversal');
     }
 
-    const arAccount = await ChartOfAccount.findOne({ accountSubType: 'accounts_receivable' });
+    const reversalAmount = Number(amount ?? payment.amount);
+    if (!Number.isFinite(reversalAmount) || reversalAmount <= 0) {
+      throw new Error(`Invalid receipt reversal amount for paymentId: ${paymentId}`);
+    }
+
+    const arAccount = await ChartOfAccount.findOne({
+      $or: [
+        { accountSubType: 'accounts_receivable' },
+        { accountName: /receivable/i },
+        { accountCode: /AR/i }
+      ],
+      isActive: true
+    });
     const paymentAccountId = payment.cashAccount || payment.bankAccount;
     const paymentAccount = paymentAccountId
       ? await ChartOfAccount.findById(paymentAccountId)
@@ -1164,7 +1176,7 @@ class AccountingService {
       lines: [
         {
           accountId: arAccount._id,
-          debitAmount: amount,
+          debitAmount: reversalAmount,
           creditAmount: 0,
           description: `AR restored for ${payment.partyName}`,
           partyType: 'customer',
@@ -1174,7 +1186,7 @@ class AccountingService {
         {
           accountId: paymentAccount._id,
           debitAmount: 0,
-          creditAmount: amount,
+          creditAmount: reversalAmount,
           description: `Cash/Bank reversed for ${payment.partyName}`
         }
       ],
@@ -1196,11 +1208,31 @@ class AccountingService {
       throw new Error('Payment not found for reversal');
     }
 
-    const apAccount = await ChartOfAccount.findOne({ accountSubType: 'accounts_payable' });
+    const reversalAmount = Number(amount ?? payment.amount);
+    if (!Number.isFinite(reversalAmount) || reversalAmount <= 0) {
+      throw new Error(`Invalid payment reversal amount for paymentId: ${paymentId}`);
+    }
+
+    const apAccount = await ChartOfAccount.findOne({
+      $or: [
+        { accountSubType: 'accounts_payable' },
+        { accountName: /payable/i },
+        { accountCode: /AP/i }
+      ],
+      isActive: true
+    });
     const paymentAccountId = payment.cashAccount || payment.bankAccount;
     const paymentAccount = paymentAccountId
       ? await ChartOfAccount.findById(paymentAccountId)
-      : await ChartOfAccount.findOne({ isCashAccount: true });
+      : await ChartOfAccount.findOne({
+          $or: [
+            { isCashAccount: true },
+            { isBankAccount: true },
+            { accountSubType: 'cash' },
+            { accountSubType: 'bank' }
+          ],
+          isActive: true
+        });
 
     if (!apAccount || !paymentAccount) {
       throw new Error('Required accounts not found for payment reversal');
@@ -1213,14 +1245,14 @@ class AccountingService {
       lines: [
         {
           accountId: paymentAccount._id,
-          debitAmount: amount,
+          debitAmount: reversalAmount,
           creditAmount: 0,
           description: `Cash/Bank restored for ${payment.partyName}`
         },
         {
           accountId: apAccount._id,
           debitAmount: 0,
-          creditAmount: amount,
+          creditAmount: reversalAmount,
           description: `AP restored for ${payment.partyName}`,
           partyType: 'vendor',
           partyId: payment.partyId,

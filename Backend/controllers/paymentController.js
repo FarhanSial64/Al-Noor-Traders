@@ -550,10 +550,19 @@ exports.updateReceipt = async (req, res) => {
 
     // Track original values for accounting reversal
     const originalAmount = receipt.amount;
-    const amountDifference = amount ? amount - originalAmount : 0;
+    const hasAmountUpdate = amount !== undefined && amount !== null && amount !== '';
+    const updatedAmount = hasAmountUpdate ? Number(amount) : originalAmount;
+    const amountDifference = updatedAmount - originalAmount;
+
+    if (hasAmountUpdate && (!Number.isFinite(updatedAmount) || updatedAmount <= 0)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Amount must be greater than 0'
+      });
+    }
 
     // Update fields
-    if (amount) receipt.amount = amount;
+    if (hasAmountUpdate) receipt.amount = updatedAmount;
     if (paymentMethod) receipt.paymentMethod = paymentMethod;
     if (paymentDate) receipt.paymentDate = new Date(paymentDate);
     if (chequeNumber !== undefined) receipt.chequeNumber = chequeNumber;
@@ -566,8 +575,17 @@ exports.updateReceipt = async (req, res) => {
 
     // Update balance if amount changed
     if (amountDifference !== 0) {
-      const maxAllowed = (receivableTotalsBefore.netReceivables || 0) + originalAmount;
-      if (receipt.amount > maxAllowed) {
+      const maxAllowed = (receivableTotalsBefore.netReceivables || 0) + (receipt.status === 'completed' ? originalAmount : 0);
+      console.log('[updateReceipt][debug]', JSON.stringify({
+        receiptId: receipt._id,
+        paymentNumber: receipt.paymentNumber,
+        originalAmount,
+        requestedAmount: receipt.amount,
+        amountDifference,
+        outstandingBefore: receivableTotalsBefore.netReceivables,
+        maxAllowed
+      }));
+      if (amountDifference > 0 && receipt.amount > (maxAllowed + 0.01)) {
         return res.status(400).json({
           success: false,
           message: `Updated receipt exceeds receivable. Max allowed: ${maxAllowed}`
@@ -612,7 +630,13 @@ exports.updateReceipt = async (req, res) => {
       data: receipt
     });
   } catch (error) {
-    console.error('Update receipt error:', error);
+    console.error('[updateReceipt][error]', {
+      message: error.message,
+      name: error.name,
+      stack: error.stack,
+      receiptId: req.params.id,
+      body: req.body
+    });
     res.status(500).json({
       success: false,
       message: error.message || 'Server error updating receipt'
@@ -652,6 +676,18 @@ exports.deleteReceipt = async (req, res) => {
       LedgerEntry.countDocuments({ sourceId: receipt._id })
     ]);
 
+    console.log('[deleteReceipt][debug][before-reversal]', JSON.stringify({
+      receiptId: receipt._id,
+      paymentNumber: receipt.paymentNumber,
+      amount: receipt.amount,
+      customerId: receipt.partyId,
+      cashAccount: receipt.cashAccount,
+      bankAccount: receipt.bankAccount,
+      journalBefore,
+      ledgerBefore,
+      outstandingBefore: receivableBefore.netReceivables
+    }));
+
     // Reverse accounting entries
     await AccountingService.reverseReceiptEntry({
       paymentId: receipt._id,
@@ -681,6 +717,13 @@ exports.deleteReceipt = async (req, res) => {
       JournalEntry.countDocuments({ sourceId: receipt._id }),
       LedgerEntry.countDocuments({ sourceId: receipt._id })
     ]);
+    console.log('[deleteReceipt][debug][after-reversal]', JSON.stringify({
+      receiptId: receipt._id,
+      paymentNumber: receipt.paymentNumber,
+      journalAfter,
+      ledgerAfter,
+      outstandingAfter: afterBalance
+    }));
     console.log(`[deleteReceipt] receipt=${receipt._id} ledger ${ledgerBefore}->${ledgerAfter} journal ${journalBefore}->${journalAfter} balance ${receivableBefore.netReceivables}->${afterBalance}`);
 
     res.json({
@@ -688,7 +731,12 @@ exports.deleteReceipt = async (req, res) => {
       message: 'Receipt deleted successfully'
     });
   } catch (error) {
-    console.error('Delete receipt error:', error);
+    console.error('[deleteReceipt][error]', {
+      message: error.message,
+      name: error.name,
+      stack: error.stack,
+      receiptId: req.params.id
+    });
     res.status(500).json({
       success: false,
       message: error.message || 'Server error deleting receipt'
@@ -745,6 +793,15 @@ exports.updatePayment = async (req, res) => {
     // Update balance if amount changed
     if (amountDifference !== 0) {
       const maxAllowed = (payableTotalsBefore.netPayables || 0) + originalAmount;
+      console.log('[updatePayment][debug]', JSON.stringify({
+        paymentId: payment._id,
+        paymentNumber: payment.paymentNumber,
+        originalAmount,
+        requestedAmount: payment.amount,
+        amountDifference,
+        outstandingBefore: payableTotalsBefore.netPayables,
+        maxAllowed
+      }));
       if (payment.amount > maxAllowed) {
         return res.status(400).json({
           success: false,
@@ -790,7 +847,13 @@ exports.updatePayment = async (req, res) => {
       data: payment
     });
   } catch (error) {
-    console.error('Update payment error:', error);
+    console.error('[updatePayment][error]', {
+      message: error.message,
+      name: error.name,
+      stack: error.stack,
+      paymentId: req.params.id,
+      body: req.body
+    });
     res.status(500).json({
       success: false,
       message: error.message || 'Server error updating payment'
@@ -830,6 +893,18 @@ exports.deletePayment = async (req, res) => {
       LedgerEntry.countDocuments({ sourceId: payment._id })
     ]);
 
+    console.log('[deletePayment][debug][before-reversal]', JSON.stringify({
+      paymentId: payment._id,
+      paymentNumber: payment.paymentNumber,
+      amount: payment.amount,
+      vendorId: payment.partyId,
+      cashAccount: payment.cashAccount,
+      bankAccount: payment.bankAccount,
+      journalBefore,
+      ledgerBefore,
+      outstandingBefore: payableBefore.netPayables
+    }));
+
     // Reverse accounting entries
     await AccountingService.reversePaymentEntry({
       paymentId: payment._id,
@@ -859,6 +934,13 @@ exports.deletePayment = async (req, res) => {
       JournalEntry.countDocuments({ sourceId: payment._id }),
       LedgerEntry.countDocuments({ sourceId: payment._id })
     ]);
+    console.log('[deletePayment][debug][after-reversal]', JSON.stringify({
+      paymentId: payment._id,
+      paymentNumber: payment.paymentNumber,
+      journalAfter,
+      ledgerAfter,
+      outstandingAfter: afterBalance
+    }));
     console.log(`[deletePayment] payment=${payment._id} ledger ${ledgerBefore}->${ledgerAfter} journal ${journalBefore}->${journalAfter} balance ${payableBefore.netPayables}->${afterBalance}`);
 
     res.json({
@@ -866,7 +948,12 @@ exports.deletePayment = async (req, res) => {
       message: 'Payment deleted successfully'
     });
   } catch (error) {
-    console.error('Delete payment error:', error);
+    console.error('[deletePayment][error]', {
+      message: error.message,
+      name: error.name,
+      stack: error.stack,
+      paymentId: req.params.id
+    });
     res.status(500).json({
       success: false,
       message: error.message || 'Server error deleting payment'
