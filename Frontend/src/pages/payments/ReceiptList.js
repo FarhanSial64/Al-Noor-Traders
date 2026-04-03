@@ -21,7 +21,7 @@ const ReceiptList = () => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const { user } = useSelector((state) => state.auth);
-  const isDistributor = user?.role === 'distributor';
+  const canManageEntries = user?.role === 'distributor' || user?.role === 'computer_operator';
   const printRef = useRef();
   const [loading, setLoading] = useState(true);
   const [receipts, setReceipts] = useState([]);
@@ -260,7 +260,7 @@ const ReceiptList = () => {
                                 <PrintOutlined fontSize="small" />
                               </IconButton>
                             </Tooltip>
-                            {isDistributor && receipt.status !== 'cancelled' && (
+                            {canManageEntries && (
                               <>
                                 <Tooltip title="Edit Receipt">
                                   <IconButton size="small" color="primary" onClick={() => handleEditClick(receipt)}>
@@ -358,7 +358,7 @@ const ReceiptList = () => {
                           >
                             Print
                           </Button>
-                          {isDistributor && receipt.status !== 'cancelled' && (
+                          {canManageEntries && (
                             <>
                               <IconButton
                                 size="small"

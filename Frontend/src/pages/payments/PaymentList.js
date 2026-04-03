@@ -22,7 +22,7 @@ const PaymentList = () => {
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const printRef = useRef();
   const { user } = useSelector((state) => state.auth);
-  const isDistributor = user?.role === 'distributor';
+  const canManageEntries = user?.role === 'distributor' || user?.role === 'computer_operator';
   const [loading, setLoading] = useState(true);
   const [payments, setPayments] = useState([]);
   const [summary, setSummary] = useState({ totalAmount: 0, count: 0 });
@@ -275,15 +275,15 @@ const PaymentList = () => {
                                 <PrintOutlined fontSize="small" />
                               </IconButton>
                             </Tooltip>
-                            {isDistributor && (
+                            {canManageEntries && (
                               <>
                                 <Tooltip title="Edit Payment">
-                                  <IconButton size="small" color="primary" onClick={() => handleEditClick(payment)} disabled={payment.status === 'cancelled'}>
+                                  <IconButton size="small" color="primary" onClick={() => handleEditClick(payment)}>
                                     <Edit fontSize="small" />
                                   </IconButton>
                                 </Tooltip>
                                 <Tooltip title="Delete Payment">
-                                  <IconButton size="small" color="error" onClick={() => handleDeleteClick(payment)} disabled={payment.status === 'cancelled'}>
+                                  <IconButton size="small" color="error" onClick={() => handleDeleteClick(payment)}>
                                     <Delete fontSize="small" />
                                   </IconButton>
                                 </Tooltip>
@@ -369,13 +369,12 @@ const PaymentList = () => {
                           >
                             Print
                           </Button>
-                          {isDistributor && (
+                          {canManageEntries && (
                             <>
                               <IconButton
                                 size="small"
                                 color="primary"
                                 onClick={() => handleEditClick(payment)}
-                                disabled={payment.status === 'cancelled'}
                                 sx={{ minWidth: 44, minHeight: 44, border: '1px solid', borderColor: 'divider' }}
                               >
                                 <Edit fontSize="small" />
@@ -384,7 +383,6 @@ const PaymentList = () => {
                                 size="small"
                                 color="error"
                                 onClick={() => handleDeleteClick(payment)}
-                                disabled={payment.status === 'cancelled'}
                                 sx={{ minWidth: 44, minHeight: 44, border: '1px solid', borderColor: 'divider' }}
                               >
                                 <Delete fontSize="small" />
