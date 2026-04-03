@@ -3,25 +3,31 @@ const router = express.Router();
 const { body, param } = require('express-validator');
 const paymentController = require('../controllers/paymentController');
 const { authenticate } = require('../middleware/auth');
-const { authorize, authorizeAny, PERMISSIONS, ROLES } = require('../middleware/authorize');
+const { authorizeAny, officeAccess, PERMISSIONS } = require('../middleware/authorize');
 const { validate } = require('../middleware/validate');
 
 // Validation rules for receipt (payment from customer)
 const receiptValidation = [
   body('customerId').isMongoId().withMessage('Valid customer ID is required'),
   body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than 0'),
+  body('paymentDate').notEmpty().withMessage('Payment date is required').isISO8601().withMessage('Valid payment date is required'),
   body('paymentMethod')
     .isIn(['cash', 'cheque', 'bank_transfer', 'online', 'other'])
-    .withMessage('Valid payment method is required')
+    .withMessage('Valid payment method is required'),
+  body('cashAccountId').optional().isMongoId().withMessage('Valid cash account ID is required'),
+  body('bankAccountId').optional().isMongoId().withMessage('Valid bank account ID is required')
 ];
 
 // Validation rules for payment (payment to vendor)
 const paymentValidation = [
   body('vendorId').isMongoId().withMessage('Valid vendor ID is required'),
   body('amount').isFloat({ min: 0.01 }).withMessage('Amount must be greater than 0'),
+  body('paymentDate').notEmpty().withMessage('Payment date is required').isISO8601().withMessage('Valid payment date is required'),
   body('paymentMethod')
     .isIn(['cash', 'cheque', 'bank_transfer', 'online', 'other'])
-    .withMessage('Valid payment method is required')
+    .withMessage('Valid payment method is required'),
+  body('cashAccountId').optional().isMongoId().withMessage('Valid cash account ID is required'),
+  body('bankAccountId').optional().isMongoId().withMessage('Valid bank account ID is required')
 ];
 
 // ========== RECEIPTS (From Customers) ==========
@@ -35,7 +41,7 @@ router.get(
 router.post(
   '/receipts',
   authenticate,
-  authorizeAny(PERMISSIONS.FINANCE_RECEIPT_ENTRY, PERMISSIONS.FINANCE_FULL_ACCESS),
+  officeAccess,
   receiptValidation,
   validate,
   paymentController.createReceipt
@@ -52,7 +58,7 @@ router.get(
 router.post(
   '/payments',
   authenticate,
-  authorizeAny(PERMISSIONS.FINANCE_PAYMENT_ENTRY, PERMISSIONS.FINANCE_FULL_ACCESS),
+  officeAccess,
   paymentValidation,
   validate,
   paymentController.createPayment
@@ -62,7 +68,7 @@ router.post(
 router.put(
   '/receipts/:id',
   authenticate,
-  authorize(PERMISSIONS.FINANCE_FULL_ACCESS),
+  officeAccess,
   param('id').isMongoId().withMessage('Invalid receipt ID'),
   [
     body('amount').optional().isFloat({ min: 0.01 }).withMessage('Amount must be greater than 0'),
@@ -78,7 +84,7 @@ router.put(
 router.delete(
   '/receipts/:id',
   authenticate,
-  authorize(PERMISSIONS.FINANCE_FULL_ACCESS),
+  officeAccess,
   param('id').isMongoId().withMessage('Invalid receipt ID'),
   validate,
   paymentController.deleteReceipt
@@ -87,7 +93,7 @@ router.delete(
 router.put(
   '/payments/:id',
   authenticate,
-  authorize(PERMISSIONS.FINANCE_FULL_ACCESS),
+  officeAccess,
   param('id').isMongoId().withMessage('Invalid payment ID'),
   [
     body('amount').optional().isFloat({ min: 0.01 }).withMessage('Amount must be greater than 0'),
@@ -103,7 +109,7 @@ router.put(
 router.delete(
   '/payments/:id',
   authenticate,
-  authorize(PERMISSIONS.FINANCE_FULL_ACCESS),
+  officeAccess,
   param('id').isMongoId().withMessage('Invalid payment ID'),
   validate,
   paymentController.deletePayment

@@ -311,6 +311,7 @@ class AccountingService {
       sourceId: orderId,
       sourceNumber: invoiceNumber,
       orderId,
+      orderId,
       userId,
       userName
     });
@@ -980,8 +981,7 @@ class AccountingService {
       throw new Error('Receipt not found for accounting update');
     }
 
-    const diff = newAmount - oldAmount;
-    if (Math.abs(diff) < 0.01) return null;
+    if (Math.abs((newAmount || 0) - (oldAmount || 0)) < 0.01) return null;
 
     const arAccount = await ChartOfAccount.findOne({ accountSubType: 'accounts_receivable' });
     const paymentAccountId = payment.cashAccount || payment.bankAccount;
@@ -993,39 +993,64 @@ class AccountingService {
       throw new Error('Required accounts not found for receipt update');
     }
 
-    const increase = diff > 0;
-    const amount = Math.abs(diff);
-
-    const journalEntry = await this.createJournalEntry({
-      entryType: 'adjustment',
+    const reverseEntry = await this.createJournalEntry({
+      entryType: 'receipt_reversal',
       entryDate: new Date(),
-      narration: `Receipt ${payment.paymentNumber} adjusted by ${amount}`,
+      narration: `Receipt ${payment.paymentNumber} reversal for update`,
+      lines: [
+        {
+          accountId: arAccount._id,
+          debitAmount: oldAmount,
+          creditAmount: 0,
+          description: `AR restored for ${payment.partyName}`,
+          partyType: 'customer',
+          partyId: payment.partyId,
+          partyName: payment.partyName
+        },
+        {
+          accountId: paymentAccount._id,
+          debitAmount: 0,
+          creditAmount: oldAmount,
+          description: `Cash/Bank reversed for ${payment.partyName}`
+        }
+      ],
+      sourceType: 'ReceiptReversal',
+      sourceId: payment._id,
+      sourceNumber: `${payment.paymentNumber}-REV-UPD`,
+      userId,
+      userName
+    });
+
+    const newEntry = await this.createJournalEntry({
+      entryType: 'receipt',
+      entryDate: new Date(),
+      narration: `Receipt ${payment.paymentNumber} reposted after update`,
       lines: [
         {
           accountId: paymentAccount._id,
-          debitAmount: increase ? amount : 0,
-          creditAmount: increase ? 0 : amount,
-          description: `Receipt adjustment for ${payment.partyName}`
+          debitAmount: newAmount,
+          creditAmount: 0,
+          description: `${payment.paymentMethod} received from ${payment.partyName}`
         },
         {
           accountId: arAccount._id,
-          debitAmount: increase ? 0 : amount,
-          creditAmount: increase ? amount : 0,
-          description: `AR adjustment for ${payment.partyName}`,
+          debitAmount: 0,
+          creditAmount: newAmount,
+          description: `Payment from ${payment.partyName}`,
           partyType: 'customer',
           partyId: payment.partyId,
           partyName: payment.partyName
         }
       ],
-      sourceType: 'ReceiptAdjustment',
+      sourceType: 'Receipt',
       sourceId: payment._id,
-      sourceNumber: `${payment.paymentNumber}-ADJ`,
+      sourceNumber: `${payment.paymentNumber}-UPD`,
       userId,
       userName
     });
 
     await this.syncCustomerBalance(payment.partyId);
-    return journalEntry;
+    return newEntry || reverseEntry;
   }
 
   static async updatePaymentEntry({ paymentId, oldAmount, newAmount, userId, userName }) {
@@ -1035,8 +1060,7 @@ class AccountingService {
       throw new Error('Payment not found for accounting update');
     }
 
-    const diff = newAmount - oldAmount;
-    if (Math.abs(diff) < 0.01) return null;
+    if (Math.abs((newAmount || 0) - (oldAmount || 0)) < 0.01) return null;
 
     const apAccount = await ChartOfAccount.findOne({ accountSubType: 'accounts_payable' });
     const paymentAccountId = payment.cashAccount || payment.bankAccount;
@@ -1048,39 +1072,64 @@ class AccountingService {
       throw new Error('Required accounts not found for payment update');
     }
 
-    const increase = diff > 0;
-    const amount = Math.abs(diff);
-
-    const journalEntry = await this.createJournalEntry({
-      entryType: 'adjustment',
+    const reverseEntry = await this.createJournalEntry({
+      entryType: 'payment_reversal',
       entryDate: new Date(),
-      narration: `Payment ${payment.paymentNumber} adjusted by ${amount}`,
+      narration: `Payment ${payment.paymentNumber} reversal for update`,
+      lines: [
+        {
+          accountId: paymentAccount._id,
+          debitAmount: oldAmount,
+          creditAmount: 0,
+          description: `Cash/Bank restored for ${payment.partyName}`
+        },
+        {
+          accountId: apAccount._id,
+          debitAmount: 0,
+          creditAmount: oldAmount,
+          description: `AP restored for ${payment.partyName}`,
+          partyType: 'vendor',
+          partyId: payment.partyId,
+          partyName: payment.partyName
+        }
+      ],
+      sourceType: 'PaymentReversal',
+      sourceId: payment._id,
+      sourceNumber: `${payment.paymentNumber}-REV-UPD`,
+      userId,
+      userName
+    });
+
+    const newEntry = await this.createJournalEntry({
+      entryType: 'payment',
+      entryDate: new Date(),
+      narration: `Payment ${payment.paymentNumber} reposted after update`,
       lines: [
         {
           accountId: apAccount._id,
-          debitAmount: increase ? amount : 0,
-          creditAmount: increase ? 0 : amount,
-          description: `AP adjustment for ${payment.partyName}`,
+          debitAmount: newAmount,
+          creditAmount: 0,
+          description: `Payment to ${payment.partyName}`,
           partyType: 'vendor',
           partyId: payment.partyId,
           partyName: payment.partyName
         },
         {
           accountId: paymentAccount._id,
-          debitAmount: increase ? 0 : amount,
-          creditAmount: increase ? amount : 0,
-          description: `Payment adjustment for ${payment.partyName}`
+          debitAmount: 0,
+          creditAmount: newAmount,
+          description: `${payment.paymentMethod} paid to ${payment.partyName}`
         }
       ],
-      sourceType: 'PaymentAdjustment',
+      sourceType: 'Payment',
       sourceId: payment._id,
-      sourceNumber: `${payment.paymentNumber}-ADJ`,
+      sourceNumber: `${payment.paymentNumber}-UPD`,
       userId,
       userName
     });
 
     await this.syncVendorBalance(payment.partyId);
-    return journalEntry;
+    return newEntry || reverseEntry;
   }
 
   static async reverseReceiptEntry({ paymentId, amount, customerId, userId, userName }) {

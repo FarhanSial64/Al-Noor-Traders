@@ -2,6 +2,8 @@ const Payment = require('../models/Payment');
 const Customer = require('../models/Customer');
 const Vendor = require('../models/Vendor');
 const ChartOfAccount = require('../models/ChartOfAccount');
+const JournalEntry = require('../models/JournalEntry');
+const LedgerEntry = require('../models/LedgerEntry');
 const AccountingService = require('../services/accountingService');
 const { logFinancialTransaction } = require('../middleware/auditLogger');
 const { ROLES } = require('../config/roles');
@@ -13,6 +15,18 @@ const { ROLES } = require('../config/roles');
  * - Receipts: Money received from customers
  * - Payments: Money paid to vendors
  */
+
+const enforceOfficeRole = (req, res) => {
+  const allowed = [ROLES.DISTRIBUTOR, ROLES.COMPUTER_OPERATOR];
+  if (!allowed.includes(req.user?.role)) {
+    res.status(403).json({
+      success: false,
+      message: 'Only Distributor and Computer Operator are allowed for this action'
+    });
+    return false;
+  }
+  return true;
+};
 
 // @desc    Get all receipts (from customers)
 // @route   GET /api/finance/receipts
@@ -96,6 +110,8 @@ exports.getReceipts = async (req, res) => {
 // @access  Private
 exports.createReceipt = async (req, res) => {
   try {
+    if (!enforceOfficeRole(req, res)) return;
+
     const {
       customerId,
       amount,
@@ -138,8 +154,33 @@ exports.createReceipt = async (req, res) => {
       }
     }
 
-    const balanceBefore = customer.currentBalance;
+    const receivableTotals = await AccountingService.calculateReceivablesFromTransactions({ customerId: customer._id });
+    const balanceBefore = receivableTotals.netReceivables || 0;
+
+    if (balanceBefore <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No outstanding receivable for this customer'
+      });
+    }
+
+    if (amount > balanceBefore) {
+      return res.status(400).json({
+        success: false,
+        message: `Receipt amount cannot exceed receivable. Outstanding: ${balanceBefore}`
+      });
+    }
+
     const balanceAfter = balanceBefore - amount;
+
+    if (balanceAfter < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Receipt would create negative receivable balance'
+      });
+    }
+
+    console.log(`[createReceipt] customer=${customer._id} before=${balanceBefore} amount=${amount} after=${balanceAfter}`);
 
     // Create payment record
     const receipt = new Payment({
@@ -186,6 +227,13 @@ exports.createReceipt = async (req, res) => {
 
     receipt.journalEntryId = journalEntry._id;
     await receipt.save();
+
+    const [journalCount, ledgerCount] = await Promise.all([
+      JournalEntry.countDocuments({ sourceType: 'Receipt', sourceId: receipt._id }),
+      LedgerEntry.countDocuments({ sourceType: 'Receipt', sourceId: receipt._id })
+    ]);
+    const customerAfter = await AccountingService.syncCustomerBalance(customer._id);
+    console.log(`[createReceipt] paymentId=${receipt._id} journal=${journalCount} ledger=${ledgerCount} balanceAfterSync=${customerAfter}`);
 
     await logFinancialTransaction(req, {
       action: 'RECEIPT',
@@ -288,6 +336,8 @@ exports.getPayments = async (req, res) => {
 // @access  Private
 exports.createPayment = async (req, res) => {
   try {
+    if (!enforceOfficeRole(req, res)) return;
+
     const {
       vendorId,
       amount,
@@ -330,8 +380,33 @@ exports.createPayment = async (req, res) => {
       }
     }
 
-    const balanceBefore = vendor.currentBalance;
+    const payableTotals = await AccountingService.calculatePayablesFromTransactions({ vendorId: vendor._id });
+    const balanceBefore = payableTotals.netPayables || 0;
+
+    if (balanceBefore <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No outstanding payable for this vendor'
+      });
+    }
+
+    if (amount > balanceBefore) {
+      return res.status(400).json({
+        success: false,
+        message: `Payment amount cannot exceed payable. Outstanding: ${balanceBefore}`
+      });
+    }
+
     const balanceAfter = balanceBefore - amount;
+
+    if (balanceAfter < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment would create negative payable balance'
+      });
+    }
+
+    console.log(`[createPayment] vendor=${vendor._id} before=${balanceBefore} amount=${amount} after=${balanceAfter}`);
 
     // Create payment record
     const payment = new Payment({
@@ -378,6 +453,13 @@ exports.createPayment = async (req, res) => {
 
     payment.journalEntryId = journalEntry._id;
     await payment.save();
+
+    const [journalCount, ledgerCount] = await Promise.all([
+      JournalEntry.countDocuments({ sourceType: 'Payment', sourceId: payment._id }),
+      LedgerEntry.countDocuments({ sourceType: 'Payment', sourceId: payment._id })
+    ]);
+    const vendorAfter = await AccountingService.syncVendorBalance(vendor._id);
+    console.log(`[createPayment] paymentId=${payment._id} journal=${journalCount} ledger=${ledgerCount} balanceAfterSync=${vendorAfter}`);
 
     await logFinancialTransaction(req, {
       action: 'PAYMENT',
@@ -441,6 +523,8 @@ exports.getPaymentDetails = async (req, res) => {
 // @access  Private (Distributor)
 exports.updateReceipt = async (req, res) => {
   try {
+    if (!enforceOfficeRole(req, res)) return;
+
     const receipt = await Payment.findOne({ 
       _id: req.params.id, 
       paymentType: 'receipt' 
@@ -478,18 +562,35 @@ exports.updateReceipt = async (req, res) => {
     if (transactionReference !== undefined) receipt.transactionReference = transactionReference;
     if (remarks !== undefined) receipt.remarks = remarks;
 
+    const receivableTotalsBefore = await AccountingService.calculateReceivablesFromTransactions({ customerId: receipt.partyId });
+
     // Update balance if amount changed
     if (amountDifference !== 0) {
+      const maxAllowed = (receivableTotalsBefore.netReceivables || 0) + originalAmount;
+      if (receipt.amount > maxAllowed) {
+        return res.status(400).json({
+          success: false,
+          message: `Updated receipt exceeds receivable. Max allowed: ${maxAllowed}`
+        });
+      }
+
       receipt.partyBalanceAfter = receipt.partyBalanceBefore - receipt.amount;
 
       // Update accounting entries via service
-      await AccountingService.updateReceiptEntry({
+      const updateEntry = await AccountingService.updateReceiptEntry({
         paymentId: receipt._id,
         oldAmount: originalAmount,
         newAmount: receipt.amount,
         userId: req.user._id,
         userName: req.user.fullName
       });
+
+      if (updateEntry?._id) {
+        receipt.journalEntryId = updateEntry._id;
+      }
+
+      const customerAfter = await AccountingService.syncCustomerBalance(receipt.partyId);
+      console.log(`[updateReceipt] receipt=${receipt._id} beforeOutstanding=${receivableTotalsBefore.netReceivables} old=${originalAmount} new=${receipt.amount} afterOutstanding=${customerAfter}`);
     }
 
     await receipt.save();
@@ -524,6 +625,8 @@ exports.updateReceipt = async (req, res) => {
 // @access  Private (Distributor)
 exports.deleteReceipt = async (req, res) => {
   try {
+    if (!enforceOfficeRole(req, res)) return;
+
     const receipt = await Payment.findOne({ 
       _id: req.params.id, 
       paymentType: 'receipt' 
@@ -542,6 +645,12 @@ exports.deleteReceipt = async (req, res) => {
         message: 'Receipt already cancelled'
       });
     }
+
+    const receivableBefore = await AccountingService.calculateReceivablesFromTransactions({ customerId: receipt.partyId });
+    const [journalBefore, ledgerBefore] = await Promise.all([
+      JournalEntry.countDocuments({ sourceId: receipt._id }),
+      LedgerEntry.countDocuments({ sourceId: receipt._id })
+    ]);
 
     // Reverse accounting entries
     await AccountingService.reverseReceiptEntry({
@@ -567,7 +676,12 @@ exports.deleteReceipt = async (req, res) => {
     receipt.status = 'cancelled';
     await receipt.save();
 
-    await AccountingService.syncCustomerBalance(receipt.partyId);
+    const afterBalance = await AccountingService.syncCustomerBalance(receipt.partyId);
+    const [journalAfter, ledgerAfter] = await Promise.all([
+      JournalEntry.countDocuments({ sourceId: receipt._id }),
+      LedgerEntry.countDocuments({ sourceId: receipt._id })
+    ]);
+    console.log(`[deleteReceipt] receipt=${receipt._id} ledger ${ledgerBefore}->${ledgerAfter} journal ${journalBefore}->${journalAfter} balance ${receivableBefore.netReceivables}->${afterBalance}`);
 
     res.json({
       success: true,
@@ -587,6 +701,8 @@ exports.deleteReceipt = async (req, res) => {
 // @access  Private (Distributor)
 exports.updatePayment = async (req, res) => {
   try {
+    if (!enforceOfficeRole(req, res)) return;
+
     const payment = await Payment.findOne({ 
       _id: req.params.id, 
       paymentType: 'payment' 
@@ -624,18 +740,35 @@ exports.updatePayment = async (req, res) => {
     if (transactionReference !== undefined) payment.transactionReference = transactionReference;
     if (remarks !== undefined) payment.remarks = remarks;
 
+    const payableTotalsBefore = await AccountingService.calculatePayablesFromTransactions({ vendorId: payment.partyId });
+
     // Update balance if amount changed
     if (amountDifference !== 0) {
+      const maxAllowed = (payableTotalsBefore.netPayables || 0) + originalAmount;
+      if (payment.amount > maxAllowed) {
+        return res.status(400).json({
+          success: false,
+          message: `Updated payment exceeds payable. Max allowed: ${maxAllowed}`
+        });
+      }
+
       payment.partyBalanceAfter = payment.partyBalanceBefore - payment.amount;
 
       // Update accounting entries via service
-      await AccountingService.updatePaymentEntry({
+      const updateEntry = await AccountingService.updatePaymentEntry({
         paymentId: payment._id,
         oldAmount: originalAmount,
         newAmount: payment.amount,
         userId: req.user._id,
         userName: req.user.fullName
       });
+
+      if (updateEntry?._id) {
+        payment.journalEntryId = updateEntry._id;
+      }
+
+      const vendorAfter = await AccountingService.syncVendorBalance(payment.partyId);
+      console.log(`[updatePayment] payment=${payment._id} beforeOutstanding=${payableTotalsBefore.netPayables} old=${originalAmount} new=${payment.amount} afterOutstanding=${vendorAfter}`);
     }
 
     await payment.save();
@@ -670,6 +803,8 @@ exports.updatePayment = async (req, res) => {
 // @access  Private (Distributor)
 exports.deletePayment = async (req, res) => {
   try {
+    if (!enforceOfficeRole(req, res)) return;
+
     const payment = await Payment.findOne({ 
       _id: req.params.id, 
       paymentType: 'payment' 
@@ -688,6 +823,12 @@ exports.deletePayment = async (req, res) => {
         message: 'Payment already cancelled'
       });
     }
+
+    const payableBefore = await AccountingService.calculatePayablesFromTransactions({ vendorId: payment.partyId });
+    const [journalBefore, ledgerBefore] = await Promise.all([
+      JournalEntry.countDocuments({ sourceId: payment._id }),
+      LedgerEntry.countDocuments({ sourceId: payment._id })
+    ]);
 
     // Reverse accounting entries
     await AccountingService.reversePaymentEntry({
@@ -713,7 +854,12 @@ exports.deletePayment = async (req, res) => {
     payment.status = 'cancelled';
     await payment.save();
 
-    await AccountingService.syncVendorBalance(payment.partyId);
+    const afterBalance = await AccountingService.syncVendorBalance(payment.partyId);
+    const [journalAfter, ledgerAfter] = await Promise.all([
+      JournalEntry.countDocuments({ sourceId: payment._id }),
+      LedgerEntry.countDocuments({ sourceId: payment._id })
+    ]);
+    console.log(`[deletePayment] payment=${payment._id} ledger ${ledgerBefore}->${ledgerAfter} journal ${journalBefore}->${journalAfter} balance ${payableBefore.netPayables}->${afterBalance}`);
 
     res.json({
       success: true,

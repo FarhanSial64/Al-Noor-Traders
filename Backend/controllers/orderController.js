@@ -311,6 +311,7 @@ exports.createOrder = async (req, res) => {
 
     // Create accounting entry for the sale
     await AccountingService.createSalesEntry({
+      orderId: order._id,
       customerId: customer._id,
       customerName: customer.businessName,
       invoiceId: order._id,
@@ -955,19 +956,30 @@ exports.generateInvoice = async (req, res) => {
     // Save invoice
     await invoice.save();
 
-    // Create accounting entries with the generated invoice number
-    const journalEntry = await AccountingService.createSalesEntry({
-      orderId: order._id,
-      customerId: order.customer._id,
-      customerName: order.customerName,
-      invoiceId: invoice._id,
-      invoiceNumber: invoice.invoiceNumber,
-      amount: invoice.grandTotal,
-      costOfGoodsSold: totalCost,
-      userId: req.user._id,
-      userName: req.user.fullName,
-      entryDate: invoice.invoiceDate
+    // Create accounting entries with the generated invoice number (avoid duplicate posting)
+    let journalEntry = await JournalEntry.findOne({
+      sourceType: 'Order',
+      sourceId: order._id,
+      entryType: 'sales'
     });
+
+    if (!journalEntry) {
+      journalEntry = await AccountingService.createSalesEntry({
+        orderId: order._id,
+        customerId: order.customer._id,
+        customerName: order.customerName,
+        invoiceId: invoice._id,
+        invoiceNumber: invoice.invoiceNumber,
+        amount: invoice.grandTotal,
+        costOfGoodsSold: totalCost,
+        userId: req.user._id,
+        userName: req.user.fullName,
+        entryDate: invoice.invoiceDate
+      });
+      console.log(`[generateInvoice] Created sales journal ${journalEntry._id} for order ${order.orderNumber}`);
+    } else {
+      console.log(`[generateInvoice] Reused existing sales journal ${journalEntry._id} for order ${order.orderNumber}`);
+    }
 
     // Update invoice with journal entry ID
     invoice.journalEntryId = journalEntry._id;
@@ -1118,18 +1130,26 @@ exports.bulkGenerateInvoices = async (req, res) => {
 
         await invoice.save();
 
-        const journalEntry = await AccountingService.createSalesEntry({
-          orderId: order._id,
-          customerId: order.customer._id,
-          customerName: order.customerName,
-          invoiceId: invoice._id,
-          invoiceNumber: invoice.invoiceNumber,
-          amount: invoice.grandTotal,
-          costOfGoodsSold: totalCost,
-          userId: req.user._id,
-          userName: req.user.fullName,
-          entryDate: invoice.invoiceDate
+        let journalEntry = await JournalEntry.findOne({
+          sourceType: 'Order',
+          sourceId: order._id,
+          entryType: 'sales'
         });
+
+        if (!journalEntry) {
+          journalEntry = await AccountingService.createSalesEntry({
+            orderId: order._id,
+            customerId: order.customer._id,
+            customerName: order.customerName,
+            invoiceId: invoice._id,
+            invoiceNumber: invoice.invoiceNumber,
+            amount: invoice.grandTotal,
+            costOfGoodsSold: totalCost,
+            userId: req.user._id,
+            userName: req.user.fullName,
+            entryDate: invoice.invoiceDate
+          });
+        }
 
         invoice.journalEntryId = journalEntry._id;
         await invoice.save();
