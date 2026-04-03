@@ -699,6 +699,8 @@ exports.deletePurchase = async (req, res) => {
 
     // Collect affected product IDs
     const affectedProductIds = purchase.items.map(item => item.product.toString());
+    const vendorBalanceBeforeDoc = await Vendor.findById(purchase.vendor).select('currentBalance').session(session);
+    const vendorBalanceBefore = vendorBalanceBeforeDoc?.currentBalance || 0;
     const journalCountBefore = await JournalEntry.countDocuments({ sourceId: purchase._id });
     const ledgerCountBefore = await LedgerEntry.countDocuments({ sourceId: purchase._id });
     const hasPurchaseAccounting = await JournalEntry.exists({ sourceType: 'Purchase', sourceId: purchase._id });
@@ -775,6 +777,10 @@ exports.deletePurchase = async (req, res) => {
 
     // Keep static vendor balance in sync with dynamic payable calculation
     await AccountingService.syncVendorBalance(vendorId);
+
+    const vendorBalanceAfterDoc = await Vendor.findById(vendorId).select('currentBalance');
+    const vendorBalanceAfter = vendorBalanceAfterDoc?.currentBalance || 0;
+    console.log(`[deletePurchase] Vendor balance ${vendorId}: ${vendorBalanceBefore} -> ${vendorBalanceAfter}`);
 
     const journalCountAfter = await JournalEntry.countDocuments({ sourceId: purchase._id });
     const ledgerCountAfter = await LedgerEntry.countDocuments({ sourceId: purchase._id });

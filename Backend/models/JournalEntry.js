@@ -92,7 +92,9 @@ const journalEntrySchema = new mongoose.Schema({
       'closing',         // Closing entry
       'transfer',        // Bank/cash transfer
       'purchase_reversal', // Reverses a purchase entry
-      'sale_reversal'    // Reverses a sale entry
+      'sale_reversal',   // Reverses a sale entry
+      'receipt_reversal',
+      'payment_reversal'
     ],
     required: true
   },
@@ -133,7 +135,7 @@ const journalEntrySchema = new mongoose.Schema({
   // Source Transaction Reference
   sourceType: {
     type: String,
-    enum: ['Invoice', 'Purchase', 'Payment', 'Receipt', 'Expense', 'Manual', 'Opening', 'PurchaseReversal', 'InvoiceReversal', 'OrderReversal'],
+    enum: ['Order', 'Invoice', 'Purchase', 'Payment', 'Receipt', 'Expense', 'Manual', 'Opening', 'PurchaseReversal', 'InvoiceReversal', 'OrderReversal', 'ReceiptReversal', 'PaymentReversal', 'ReceiptAdjustment', 'PaymentAdjustment', 'PurchaseAdjustment'],
     required: true
   },
   sourceId: {
@@ -141,6 +143,16 @@ const journalEntrySchema = new mongoose.Schema({
   },
   sourceNumber: {
     type: String
+  },
+
+  // Explicit source linkage for faster auditing
+  orderId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Order'
+  },
+  purchaseId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Purchase'
   },
 
   // Status
@@ -219,6 +231,8 @@ journalEntrySchema.pre('save', function(next) {
 journalEntrySchema.index({ entryDate: -1 });
 journalEntrySchema.index({ entryType: 1, entryDate: -1 });
 journalEntrySchema.index({ sourceType: 1, sourceId: 1 });
+journalEntrySchema.index({ orderId: 1 });
+journalEntrySchema.index({ purchaseId: 1 });
 journalEntrySchema.index({ 'lines.account': 1 });
 
 module.exports = mongoose.model('JournalEntry', journalEntrySchema);

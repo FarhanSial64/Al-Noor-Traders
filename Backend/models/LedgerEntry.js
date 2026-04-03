@@ -79,13 +79,23 @@ const ledgerEntrySchema = new mongoose.Schema({
   // Source Reference
   sourceType: {
     type: String,
-    enum: ['Invoice', 'Purchase', 'Payment', 'Receipt', 'Expense', 'Manual', 'Opening', 'PurchaseReversal', 'InvoiceReversal', 'OrderReversal']
+    enum: ['Order', 'Invoice', 'Purchase', 'Payment', 'Receipt', 'Expense', 'Manual', 'Opening', 'PurchaseReversal', 'InvoiceReversal', 'OrderReversal', 'ReceiptReversal', 'PaymentReversal', 'ReceiptAdjustment', 'PaymentAdjustment', 'PurchaseAdjustment']
   },
   sourceId: {
     type: mongoose.Schema.Types.ObjectId
   },
   sourceNumber: {
     type: String
+  },
+
+  // Explicit source linkage for auditing
+  orderId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Order'
+  },
+  purchaseId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Purchase'
   },
 
   // Audit
@@ -102,5 +112,8 @@ const ledgerEntrySchema = new mongoose.Schema({
 ledgerEntrySchema.index({ account: 1, entryDate: -1 });
 ledgerEntrySchema.index({ partyType: 1, partyId: 1, entryDate: -1 });
 ledgerEntrySchema.index({ journalEntry: 1 });
+ledgerEntrySchema.index({ sourceType: 1, sourceId: 1 });
+ledgerEntrySchema.index({ orderId: 1 });
+ledgerEntrySchema.index({ purchaseId: 1 });
 
 module.exports = mongoose.model('LedgerEntry', ledgerEntrySchema);

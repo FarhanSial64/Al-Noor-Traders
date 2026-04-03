@@ -558,3 +558,24 @@ exports.recalculateInvoiceProfits = async (req, res) => {
     });
   }
 };
+
+// @desc    Cleanup orphan journal/ledger entries
+// @route   POST /api/accounting/cleanup-orphan-ledgers
+// @access  Private (Distributor only)
+exports.cleanupOrphanLedgers = async (req, res) => {
+  try {
+    const result = await AccountingService.cleanupOrphanLedgerEntries();
+
+    res.json({
+      success: true,
+      message: `Orphan cleanup complete. Journals deleted: ${result.orphanJournalsDeleted}, Ledger entries deleted: ${result.orphanLedgersDeleted}`,
+      data: result
+    });
+  } catch (error) {
+    console.error('Cleanup orphan ledgers error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error cleaning orphan ledger entries'
+    });
+  }
+};

@@ -957,6 +957,7 @@ exports.generateInvoice = async (req, res) => {
 
     // Create accounting entries with the generated invoice number
     const journalEntry = await AccountingService.createSalesEntry({
+      orderId: order._id,
       customerId: order.customer._id,
       customerName: order.customerName,
       invoiceId: invoice._id,
@@ -1118,6 +1119,7 @@ exports.bulkGenerateInvoices = async (req, res) => {
         await invoice.save();
 
         const journalEntry = await AccountingService.createSalesEntry({
+          orderId: order._id,
           customerId: order.customer._id,
           customerName: order.customerName,
           invoiceId: invoice._id,
@@ -1612,9 +1614,15 @@ exports.deleteOrder = async (req, res) => {
     }
 
     // Check whether original sales accounting exists for this order/invoice
-    const hasSalesAccounting = order.invoiceId
-      ? await JournalEntry.exists({ sourceType: 'Invoice', sourceId: order.invoiceId })
-      : false;
+    const hasSalesAccounting = !!(await JournalEntry.exists({
+      $or: [
+        { sourceType: 'Order', sourceId: order._id },
+        ...(order.invoiceId ? [{ sourceType: 'Invoice', sourceId: order.invoiceId }] : [])
+      ]
+    }));
+
+    const customerBalanceBeforeDoc = await Customer.findById(order.customer).select('currentBalance');
+    const customerBalanceBefore = customerBalanceBeforeDoc?.currentBalance || 0;
 
     // Delete related invoice if exists
     if (order.invoiceGenerated && order.invoiceId) {
@@ -1657,6 +1665,10 @@ exports.deleteOrder = async (req, res) => {
 
     // Keep static customer balance in sync with dynamic receivables
     await AccountingService.syncCustomerBalance(order.customer);
+
+    const customerBalanceAfterDoc = await Customer.findById(order.customer).select('currentBalance');
+    const customerBalanceAfter = customerBalanceAfterDoc?.currentBalance || 0;
+    console.log(`[deleteOrder] Customer balance ${order.customer}: ${customerBalanceBefore} -> ${customerBalanceAfter}`);
 
     const journalCountAfter = await JournalEntry.countDocuments({ sourceId: { $in: sourceIdsForCount } });
     const ledgerCountAfter = await LedgerEntry.countDocuments({ sourceId: { $in: sourceIdsForCount } });

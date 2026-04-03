@@ -27,6 +27,8 @@ class AccountingService {
     sourceType,
     sourceId,
     sourceNumber,
+    orderId,
+    purchaseId,
     userId,
     userName
   }) {
@@ -60,6 +62,9 @@ class AccountingService {
     }));
 
     // Create journal entry
+    const derivedOrderId = orderId || (sourceType === 'Order' || sourceType === 'OrderReversal' ? sourceId : undefined);
+    const derivedPurchaseId = purchaseId || (sourceType === 'Purchase' || sourceType === 'PurchaseReversal' || sourceType === 'PurchaseAdjustment' ? sourceId : undefined);
+
     const journalEntry = await JournalEntry.create({
       entryType,
       entryDate: entryDate || new Date(),
@@ -70,6 +75,8 @@ class AccountingService {
       sourceType,
       sourceId,
       sourceNumber,
+      orderId: derivedOrderId,
+      purchaseId: derivedPurchaseId,
       isPosted: true,
       postedAt: new Date(),
       postedBy: userId,
@@ -122,6 +129,8 @@ class AccountingService {
         sourceType: journalEntry.sourceType,
         sourceId: journalEntry.sourceId,
         sourceNumber: journalEntry.sourceNumber,
+        orderId: journalEntry.orderId,
+        purchaseId: journalEntry.purchaseId,
         createdBy: userId
       });
 
@@ -238,6 +247,7 @@ class AccountingService {
    * Credit: Sales Revenue
    */
   static async createSalesEntry({
+    orderId,
     customerId,
     customerName,
     invoiceId,
@@ -297,9 +307,10 @@ class AccountingService {
       entryDate,
       narration: `Sales Invoice ${invoiceNumber} - ${customerName}`,
       lines,
-      sourceType: 'Invoice',
-      sourceId: invoiceId,
+      sourceType: 'Order',
+      sourceId: orderId,
       sourceNumber: invoiceNumber,
+      orderId,
       userId,
       userName
     });
@@ -1722,6 +1733,7 @@ class AccountingService {
       sourceType: 'PurchaseReversal',
       sourceId: purchaseId,
       sourceNumber: `${purchaseNumber}-REV`,
+      purchaseId,
       userId,
       userName
     });
@@ -1802,6 +1814,7 @@ class AccountingService {
       sourceType: 'OrderReversal',
       sourceId: orderId,
       sourceNumber: `${invoiceNumber}-REV`,
+      orderId,
       userId,
       userName
     });
@@ -1812,6 +1825,61 @@ class AccountingService {
     });
 
     return journalEntry;
+  }
+
+  static async cleanupOrphanLedgerEntries() {
+    const Order = require('../models/Order');
+    const Purchase = require('../models/Purchase');
+    const Invoice = require('../models/Invoice');
+    const Payment = require('../models/Payment');
+
+    const sourceModelMap = {
+      Order,
+      Purchase,
+      Invoice,
+      Payment,
+      Receipt: Payment
+    };
+
+    const journalCandidates = await JournalEntry.find({
+      sourceType: { $in: ['Order', 'Purchase', 'Invoice', 'Payment', 'Receipt'] },
+      sourceId: { $exists: true, $ne: null }
+    }).select('_id sourceType sourceId sourceNumber');
+
+    const orphanJournalIds = [];
+    const orphanSources = [];
+
+    for (const entry of journalCandidates) {
+      const model = sourceModelMap[entry.sourceType];
+      if (!model) continue;
+
+      const exists = await model.exists({ _id: entry.sourceId });
+      if (!exists) {
+        orphanJournalIds.push(entry._id);
+        orphanSources.push({
+          type: entry.sourceType,
+          sourceId: entry.sourceId,
+          sourceNumber: entry.sourceNumber,
+          journalEntryId: entry._id
+        });
+      }
+    }
+
+    const ledgerDeleteResult = orphanJournalIds.length
+      ? await LedgerEntry.deleteMany({ journalEntry: { $in: orphanJournalIds } })
+      : { deletedCount: 0 };
+
+    const journalDeleteResult = orphanJournalIds.length
+      ? await JournalEntry.deleteMany({ _id: { $in: orphanJournalIds } })
+      : { deletedCount: 0 };
+
+    console.log(`[cleanupOrphanLedgerEntries] orphanJournals=${journalDeleteResult.deletedCount} orphanLedgers=${ledgerDeleteResult.deletedCount}`);
+
+    return {
+      orphanJournalsDeleted: journalDeleteResult.deletedCount || 0,
+      orphanLedgersDeleted: ledgerDeleteResult.deletedCount || 0,
+      orphanSources
+    };
   }
 }
 

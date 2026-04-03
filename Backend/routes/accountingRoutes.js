@@ -112,4 +112,11 @@ router.post(
   accountingController.recalculateInvoiceProfits
 );
 
+router.post(
+  '/cleanup-orphan-ledgers',
+  authenticate,
+  authorizeRoles('distributor'),
+  accountingController.cleanupOrphanLedgers
+);
+
 module.exports = router;
