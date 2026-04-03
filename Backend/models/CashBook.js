@@ -55,7 +55,22 @@ const cashBookEntrySchema = new mongoose.Schema({
   // Reference
   referenceType: {
     type: String,
-    enum: ['Payment', 'Receipt', 'Expense', 'Transfer', 'Opening', 'Adjustment']
+    enum: [
+      'Payment',
+      'Receipt',
+      'Expense',
+      'Transfer',
+      'Opening',
+      'Adjustment',
+      'ReceiptReversal',
+      'PaymentReversal',
+      'ReceiptAdjustment',
+      'PaymentAdjustment',
+      'PurchaseAdjustment',
+      'PurchaseReversal',
+      'InvoiceReversal',
+      'OrderReversal'
+    ]
   },
   referenceId: {
     type: mongoose.Schema.Types.ObjectId
