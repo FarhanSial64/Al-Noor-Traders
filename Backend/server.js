@@ -8,6 +8,7 @@ const path = require('path');
 require('dotenv').config();
 
 const connectDB = require('./config/db');
+const { initializeDatabase } = require('./config/dbInit');
 const { errorHandler } = require('./middleware/errorHandler');
 
 // Import routes
@@ -32,8 +33,14 @@ const app = express();
 // Trust proxy for rate limiting behind reverse proxies
 app.set('trust proxy', 1);
 
-// Connect to database
-connectDB();
+// Connect to database and initialize
+(async () => {
+  await connectDB();
+  await initializeDatabase();
+})().catch(err => {
+  console.error('Critical startup error:', err.message);
+  process.exit(1);
+});
 
 // ===== SECURITY MIDDLEWARE =====
 
