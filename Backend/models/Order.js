@@ -70,10 +70,13 @@ const orderItemSchema = new mongoose.Schema({
   }
 });
 
-// Calculate line totals before validation
+// Calculate line totals before validation - WITH PROPER ROUNDING
 orderItemSchema.pre('validate', function(next) {
-  this.lineTotal = this.quantity * this.salePrice;
-  this.netAmount = this.lineTotal - (this.discount || 0);
+  // Helper function to round to 2 decimal places
+  const roundToTwo = (val) => Math.round(val * 100) / 100;
+  
+  this.lineTotal = roundToTwo(this.quantity * this.salePrice);
+  this.netAmount = roundToTwo(this.lineTotal - (this.discount || 0));
   next();
 });
 
@@ -232,11 +235,20 @@ orderSchema.pre('validate', async function(next) {
   next();
 });
 
-// Calculate totals before saving
+// Calculate totals before saving - WITH PROPER ROUNDING
 orderSchema.pre('save', function(next) {
-  this.subtotal = this.items.reduce((sum, item) => sum + item.lineTotal, 0);
-  this.totalDiscount = this.items.reduce((sum, item) => sum + (item.discount || 0), 0);
-  this.grandTotal = this.subtotal - this.totalDiscount + this.taxAmount;
+  // Helper function to round to 2 decimal places
+  const roundToTwo = (val) => Math.round(val * 100) / 100;
+  
+  this.subtotal = roundToTwo(
+    this.items.reduce((sum, item) => sum + (roundToTwo(item.lineTotal) || 0), 0)
+  );
+  this.totalDiscount = roundToTwo(
+    this.items.reduce((sum, item) => sum + (roundToTwo(item.discount) || 0), 0)
+  );
+  this.grandTotal = roundToTwo(
+    this.subtotal - this.totalDiscount + (this.taxAmount || 0)
+  );
   next();
 });
 

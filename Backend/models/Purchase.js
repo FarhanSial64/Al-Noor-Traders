@@ -61,10 +61,13 @@ const purchaseItemSchema = new mongoose.Schema({
   }
 });
 
-// Calculate totals
+// Calculate totals - WITH PROPER ROUNDING to prevent floating point errors
 purchaseItemSchema.pre('validate', function(next) {
-  this.costPerUnit = this.purchasePrice;
-  this.lineTotal = this.quantity * this.purchasePrice;
+  // Helper function to round to 2 decimal places
+  const roundToTwo = (val) => Math.round(val * 100) / 100;
+  
+  this.costPerUnit = roundToTwo(this.purchasePrice);
+  this.lineTotal = roundToTwo(this.quantity * this.purchasePrice);
   next();
 });
 
@@ -204,10 +207,18 @@ purchaseSchema.pre('save', async function(next) {
   next();
 });
 
-// Calculate totals
+// Calculate totals - WITH PROPER ROUNDING to prevent floating point errors
 purchaseSchema.pre('save', function(next) {
-  this.subtotal = this.items.reduce((sum, item) => sum + item.lineTotal, 0);
-  this.grandTotal = this.subtotal + this.taxAmount + this.otherCharges;
+  // Helper function to round to 2 decimal places
+  const roundToTwo = (val) => Math.round(val * 100) / 100;
+  
+  // Sum with rounding at each step to prevent accumulation of floating point errors
+  this.subtotal = roundToTwo(
+    this.items.reduce((sum, item) => sum + (roundToTwo(item.lineTotal) || 0), 0)
+  );
+  this.grandTotal = roundToTwo(
+    this.subtotal + (this.taxAmount || 0) + (this.otherCharges || 0)
+  );
   next();
 });
 
