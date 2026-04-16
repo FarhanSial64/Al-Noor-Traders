@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useSelector } from 'react-redux';
 import { Box, Card, CardContent, Grid, TextField, Button, Autocomplete, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, IconButton, Typography, Divider, Paper, CircularProgress, Tooltip, Dialog, DialogTitle, DialogContent, DialogActions, Alert, Chip } from '@mui/material';
@@ -35,7 +35,7 @@ const PurchaseForm = () => {
   const [stockInfo, setStockInfo] = useState(null);
   const [loadingStock, setLoadingStock] = useState(false);
 
-  useEffect(() => { fetchData(); }, []);
+  const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
 
   // Fetch stock when product is selected
   useEffect(() => {
@@ -66,7 +66,7 @@ const PurchaseForm = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, vendors, products]);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       const [vendorRes, prodRes] = await Promise.all([vendorService.getVendors({ limit: 1000 }), productService.getProducts({ limit: 1000 })]);
       setVendors(vendorRes.data || []);
@@ -75,7 +75,9 @@ const PurchaseForm = () => {
       toast.error('Failed to load data');
       if (isEditMode) setLoading(false); // Stop loading on error in edit mode
     }
-  };
+  }, [isEditMode]);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
 
   const fetchPurchase = async () => {
     try {
@@ -104,7 +106,7 @@ const PurchaseForm = () => {
         const productId = item.product?._id || item.product;
         const product = products.find(p => p._id === productId || p._id.toString() === productId?.toString());
         const piecesPerCarton = item.piecesPerCarton || product?.piecesPerCarton || 1;
-        const pricePerCarton = item.purchasePrice * piecesPerCarton;
+        const pricePerCarton = roundMoney((item.purchasePrice || 0) * piecesPerCarton);
         return {
           product: product || { _id: productId, name: item.productName, sku: item.productSku },
           productName: item.productName,
@@ -113,9 +115,9 @@ const PurchaseForm = () => {
           cartons: item.cartons || 0,
           pieces: item.pieces || 0,
           totalPieces: item.quantity,
-          purchasePrice: item.purchasePrice,
+          purchasePrice: roundMoney(item.purchasePrice),
           pricePerCarton: pricePerCarton,
-          total: item.lineTotal
+          total: roundMoney(item.lineTotal)
         };
       });
 
@@ -149,8 +151,8 @@ const PurchaseForm = () => {
     if (exists) { toast.error('Product already added'); return; }
 
     const piecesPerCarton = newItem.product.piecesPerCarton || 1;
-    const pricePerCarton = parseFloat(newItem.purchasePrice);
-    const pricePerPiece = pricePerCarton / piecesPerCarton;
+    const pricePerCarton = roundMoney(parseFloat(newItem.purchasePrice));
+    const pricePerPiece = roundMoney(pricePerCarton / piecesPerCarton);
     const totalCartons = parseInt(newItem.cartons) || 0;
     const item = {
       product: newItem.product,
@@ -162,7 +164,7 @@ const PurchaseForm = () => {
       totalPieces: totalPieces,
       purchasePrice: pricePerPiece,
       pricePerCarton: pricePerCarton,
-      total: (totalCartons * pricePerCarton) + ((parseInt(newItem.pieces) || 0) * pricePerPiece),
+      total: roundMoney((totalCartons * pricePerCarton) + ((parseInt(newItem.pieces) || 0) * pricePerPiece)),
     };
     setFormData(prev => ({ ...prev, items: [...prev.items, item] }));
     setNewItem({ product: null, cartons: 0, pieces: 0, purchasePrice: 0 });
@@ -175,7 +177,11 @@ const PurchaseForm = () => {
   const handleEditClick = (index) => {
     const item = formData.items[index];
     setEditIndex(index);
-    setEditItem({ cartons: item.cartons, pieces: item.pieces, purchasePrice: item.pricePerCarton || item.purchasePrice * (item.piecesPerCarton || 1) });
+    setEditItem({
+      cartons: item.cartons,
+      pieces: item.pieces,
+      purchasePrice: roundMoney(item.pricePerCarton || (item.purchasePrice * (item.piecesPerCarton || 1)))
+    });
     setEditDialog(true);
   };
 
@@ -186,8 +192,8 @@ const PurchaseForm = () => {
     if (editItem.purchasePrice <= 0) { toast.error('Purchase price must be > 0'); return; }
 
     const piecesPerCarton = item.piecesPerCarton || 1;
-    const pricePerCarton = parseFloat(editItem.purchasePrice);
-    const pricePerPiece = pricePerCarton / piecesPerCarton;
+    const pricePerCarton = roundMoney(parseFloat(editItem.purchasePrice));
+    const pricePerPiece = roundMoney(pricePerCarton / piecesPerCarton);
     const totalCartons = parseInt(editItem.cartons) || 0;
     const updatedItems = [...formData.items];
     updatedItems[editIndex] = {
@@ -197,7 +203,7 @@ const PurchaseForm = () => {
       totalPieces: totalPieces,
       purchasePrice: pricePerPiece,
       pricePerCarton: pricePerCarton,
-      total: (totalCartons * pricePerCarton) + ((parseInt(editItem.pieces) || 0) * pricePerPiece),
+      total: roundMoney((totalCartons * pricePerCarton) + ((parseInt(editItem.pieces) || 0) * pricePerPiece)),
     };
     setFormData(prev => ({ ...prev, items: updatedItems }));
     setEditDialog(false);
@@ -206,7 +212,7 @@ const PurchaseForm = () => {
   };
 
   const calculateTotals = () => {
-    const subtotal = formData.items.reduce((sum, item) => sum + item.total, 0);
+    const subtotal = roundMoney(formData.items.reduce((sum, item) => sum + roundMoney(item.total), 0));
     return { subtotal, grandTotal: subtotal };
   };
 
@@ -353,7 +359,7 @@ const PurchaseForm = () => {
                     <TextField fullWidth type="number" label="Pieces" size="small" value={newItem.pieces} onChange={(e) => setNewItem(prev => ({ ...prev, pieces: e.target.value }))} inputProps={{ min: 0 }} helperText=" " />
                   </Grid>
                   <Grid item xs={6} sm={3} md={2}>
-                    <TextField fullWidth type="number" label="Price/Carton *" size="small" value={newItem.purchasePrice} onChange={(e) => setNewItem(prev => ({ ...prev, purchasePrice: e.target.value }))} inputProps={{ min: 0 }} helperText=" " />
+                    <TextField fullWidth type="number" label="Price/Carton *" size="small" value={newItem.purchasePrice} onChange={(e) => setNewItem(prev => ({ ...prev, purchasePrice: e.target.value }))} inputProps={{ min: 0, step: '0.01' }} helperText=" " />
                   </Grid>
                   <Grid item xs={6} sm={3} md={2}>
                     <Button fullWidth variant="contained" startIcon={<Add />} onClick={handleAddItem} sx={{ height: 40 }}>Add</Button>
@@ -436,7 +442,7 @@ const PurchaseForm = () => {
               <TextField fullWidth type="number" label="Pieces" value={editItem.pieces} onChange={(e) => setEditItem(prev => ({ ...prev, pieces: e.target.value }))} inputProps={{ min: 0 }} />
             </Grid>
             <Grid item xs={12}>
-              <TextField fullWidth type="number" label="Price per Carton" value={editItem.purchasePrice} onChange={(e) => setEditItem(prev => ({ ...prev, purchasePrice: e.target.value }))} inputProps={{ min: 0 }} />
+              <TextField fullWidth type="number" label="Price per Carton" value={editItem.purchasePrice} onChange={(e) => setEditItem(prev => ({ ...prev, purchasePrice: e.target.value }))} inputProps={{ min: 0, step: '0.01' }} />
             </Grid>
           </Grid>
         </DialogContent>
