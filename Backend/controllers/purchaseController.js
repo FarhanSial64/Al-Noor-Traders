@@ -163,12 +163,21 @@ exports.createPurchase = async (req, res) => {
       }
 
       // Validate purchase price
-      const purchasePrice = Math.round(parseFloat(item.purchasePrice) * 100) / 100;
+      const purchasePrice = Math.round(parseFloat(item.purchasePrice) * 1000000) / 1000000;
       if (isNaN(purchasePrice) || purchasePrice < 0) {
         await session.abortTransaction();
         return res.status(400).json({
           success: false,
           message: `Invalid purchase price for ${product.name}`
+        });
+      }
+
+      const enteredPricePerCarton = item.pricePerCarton !== undefined ? Number(item.pricePerCarton) : null;
+      if (enteredPricePerCarton !== null && !Number.isInteger(enteredPricePerCarton)) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          message: `Price per carton must be whole number (no decimals) for ${product.name}`
         });
       }
 
@@ -181,15 +190,21 @@ exports.createPurchase = async (req, res) => {
         });
       }
 
-      const lineTotal = Math.round(quantity * purchasePrice * 100) / 100;
+      const cartons = parseInt(item.cartons) || 0;
+      const pieces = parseInt(item.pieces) || 0;
+      const piecesPerCarton = item.piecesPerCarton || product.piecesPerCarton || 1;
+      const derivedPricePerCarton = enteredPricePerCarton !== null
+        ? enteredPricePerCarton
+        : Math.round(purchasePrice * piecesPerCarton);
+      const lineTotal = Math.round((cartons * derivedPricePerCarton) + (pieces * (derivedPricePerCarton / piecesPerCarton)));
 
       purchaseItems.push({
         product: product._id,
         productName: product.name,
         productSku: product.sku,
-        cartons: item.cartons || 0,
-        pieces: item.pieces || 0,
-        piecesPerCarton: item.piecesPerCarton || product.piecesPerCarton || 1,
+        cartons,
+        pieces,
+        piecesPerCarton,
         quantity: quantity,
         unitName: 'Pieces',
         purchasePrice: purchasePrice,
@@ -368,7 +383,7 @@ exports.updatePurchase = async (req, res) => {
         }
 
         // Validate and round prices
-        const purchasePrice = Math.round(parseFloat(item.purchasePrice) * 100) / 100;
+        const purchasePrice = Math.round(parseFloat(item.purchasePrice) * 1000000) / 1000000;
         const quantity = parseInt(item.quantity);
         
         if (isNaN(purchasePrice) || purchasePrice < 0) {
@@ -387,15 +402,30 @@ exports.updatePurchase = async (req, res) => {
           });
         }
 
-        const lineTotal = Math.round(quantity * purchasePrice * 100) / 100;
+        const enteredPricePerCarton = item.pricePerCarton !== undefined ? Number(item.pricePerCarton) : null;
+        if (enteredPricePerCarton !== null && !Number.isInteger(enteredPricePerCarton)) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            success: false,
+            message: `Price per carton must be whole number (no decimals) for ${product.name}`
+          });
+        }
+
+        const cartons = parseInt(item.cartons) || 0;
+        const pieces = parseInt(item.pieces) || 0;
+        const piecesPerCarton = item.piecesPerCarton || product.piecesPerCarton || 1;
+        const derivedPricePerCarton = enteredPricePerCarton !== null
+          ? enteredPricePerCarton
+          : Math.round(purchasePrice * piecesPerCarton);
+        const lineTotal = Math.round((cartons * derivedPricePerCarton) + (pieces * (derivedPricePerCarton / piecesPerCarton)));
 
         purchaseItems.push({
           product: product._id,
           productName: product.name,
           productSku: product.sku,
-          cartons: item.cartons || 0,
-          pieces: item.pieces || 0,
-          piecesPerCarton: item.piecesPerCarton || product.piecesPerCarton || 1,
+          cartons,
+          pieces,
+          piecesPerCarton,
           quantity: quantity,
           unitName: 'Pieces',
           purchasePrice: purchasePrice,

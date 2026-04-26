@@ -4,8 +4,8 @@
 
 ---
 
-**Version:** 1.0  
-**Document Date:** February 2026  
+**Version:** 1.1  
+**Document Date:** April 2026  
 **For:** All Staff Members, Distributors, Order Bookers, and Computer Operators
 
 ---
@@ -332,11 +332,16 @@ When goods arrive from a vendor:
    - Click **"Add Item"**
    - Select the **product**
    - Enter **quantity** (cartons and/or pieces)
-   - Enter **purchase price per piece**
+   - Enter **purchase price per carton**
    - The system calculates the line total
 7. Add more products as needed
 8. Review the **total amount**
 9. Click **"Save Purchase"**
+
+**Important (Price Precision Update - April 2026):**
+- Purchase prices are now automatically rounded to 2 decimal places while adding/editing items.
+- If you enter `10000`, it will stay `10000` (no long decimal tail like `10000.199999...`).
+- Price fields accept paisa values (for example `10000.50`) and save correctly.
 
 The system automatically:
 - Updates inventory (adds stock)
@@ -1214,6 +1219,23 @@ Note: This week shows a loss because expenses were high and sales were low. This
 2. Contact Admin/Supervisor immediately
 3. Don't make multiple entries trying to fix it yourself
 4. Wait for guidance on how to correct
+
+---
+
+## If Purchase Price Shows Long Decimal (Example: 10000.199999)
+
+### Current System Behavior (After April 2026 Update)
+- The system rounds purchase prices to 2 decimal places automatically.
+- While editing purchase items, the **Price per Carton** field should now remain clean.
+
+### If You Still See This Issue
+1. Refresh the browser once and open the purchase again.
+2. Re-enter the carton price manually (e.g., `10000` or `10000.50`).
+3. Save and verify the value in Purchase Detail.
+4. If issue continues, report to Admin with:
+   - Purchase number
+   - Product name
+   - Entered price vs saved price screenshot
 
 ---
 
